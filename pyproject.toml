@@ -1,0 +1,16 @@
+[project]
+name = "idle"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+windows = ["windows-curses"]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+idle = "idle.__main__:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
