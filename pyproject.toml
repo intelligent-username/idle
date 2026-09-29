@@ -2,7 +2,9 @@
 name = "idle"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "windows-curses>=2.4.2",
+]
 
 [project.optional-dependencies]
 windows = ["windows-curses"]
@@ -14,3 +16,9 @@ idle = "idle.__main__:main"
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["idle*"]
+
+[tool.setuptools.package-data]
+idle = ["data/*.txt", "data/snippets/*.txt"]

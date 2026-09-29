@@ -2,34 +2,26 @@
 
 Keyboard-only companion for typing practice and LeetCode in a terminal pane.
 
-## Install
+## Requirements
 
-```bash
-pip install -e .
-pip install -e .[dev]
-python -m idle
-idle
+- Python 3.11+
+- Terminal with minimum dimensions of 40x10
+
+## Setup & Running
+
+1. Activate the virtual environment:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
 ```
 
-`idle --help` starts in under 100ms via lazy `curses`/`urllib` imports.
+2. Run the project:
 
-## Config paths
-
-Linux/macOS:
-
-- `~/.config/idle/config.toml`
-- `~/.config/idle/auth.json` (0600)
-- `~/.local/share/idle/idle.db`
-
-Honors `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when set.
-
-Windows:
-
-- `%APPDATA%\idle\config.toml`
-- `%APPDATA%\idle\auth.json`
-- `%APPDATA%\idle\idle.db`
-
-Config auto-creates on first run. View with `idle config`, edit with `idle config --edit`.
+```powershell
+python -m idle
+```
 
 ## Usage
 
@@ -83,15 +75,6 @@ idle lc open two-sum
 
 Cookies are never logged. On expiry run `idle lc login` again.
 
-## Windows
-
-Unix uses stdlib `curses`. On Windows install the extra:
-
-```bash
-pip install -e .[windows]
-```
-
-This installs `windows-curses` with the same API.
 
 ## Graceful failures
 

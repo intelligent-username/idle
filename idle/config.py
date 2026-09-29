@@ -74,20 +74,11 @@ def _merge_defaults(loaded: dict[str, Any]) -> dict[str, Any]:
 
 
 def resolve_paths() -> tuple[Path, Path, Path]:
-    """Return (db_path, config_path, auth_path), creating parent dirs."""
-    if os.name == "nt":
-        appdata: str | None = os.environ.get("APPDATA")
-        base: Path = Path(appdata) if appdata else _home() / "AppData" / "Roaming" / "idle"
-        db_path: Path = base / "idle.db"
-        config_path: Path = base / "config.toml"
-        auth_path: Path = base / "auth.json"
-    else:
-        home: Path = _home()
-        config_home: Path = Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else home / ".config"
-        data_home: Path = Path(os.environ["XDG_DATA_HOME"]) if os.environ.get("XDG_DATA_HOME") else home / ".local" / "share"
-        config_path = config_home / "idle" / "config.toml"
-        auth_path = config_home / "idle" / "auth.json"
-        db_path = data_home / "idle" / "idle.db"
+    """Return (db_path, config_path, auth_path) in the local working directory."""
+    base: Path = Path.cwd()
+    db_path: Path = base / "idle.db"
+    config_path: Path = base / "config.toml"
+    auth_path: Path = base / "auth.json"
     _ensure_parent(db_path)
     _ensure_parent(config_path)
     _ensure_parent(auth_path)

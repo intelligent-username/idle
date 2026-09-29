@@ -1,2 +1,7 @@
 notes/
 **cache**
+idle.db
+config.toml
+auth.json
+.venv/
+**-info

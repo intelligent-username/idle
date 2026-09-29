@@ -1,5 +1,7 @@
 """Argparse tree and dispatch with lazy heavy imports."""
 
+from __future__ import annotations
+
 import argparse
 from typing import Any
 

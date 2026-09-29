@@ -16,17 +16,10 @@ from idle.lc.scaffold import strip_header
 
 @pytest.fixture()
 def _tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point XDG and HOME at tmp dirs."""
-    home: Path = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    """Point working directory at tmp dir."""
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    return home
+    return tmp_path
 
 
 def _fixture(name: str) -> dict[str, Any]:
