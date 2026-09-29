@@ -51,6 +51,11 @@ def _add_stats_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     p_stats.add_argument("--limit", type=int, default=20)
 
 
+def _add_gui_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Add gui subcommand for default launch."""
+    sub.add_parser("gui", help="launch pygame GUI (default)")
+
+
 def _add_config_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_config = sub.add_parser("config", help="show config")
     p_config.add_argument("--edit", action="store_true")
@@ -62,12 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="idle",
         description="Terminal typing + LeetCode toolkit",
     )
+    parser.add_argument("--cli", action="store_true", help="use terminal menu instead of GUI")
     sub = parser.add_subparsers(dest="command")
     _add_type_parser(sub)
     sub.add_parser("drill", help="adaptive drill")
     _add_lc_parser(sub)
     _add_stats_parser(sub)
     _add_config_parser(sub)
+    _add_gui_parser(sub)
     return parser
 
 
@@ -493,13 +500,21 @@ def run_menu() -> None:
             print("pick 1-5")
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     """Parse args and dispatch, restoring terminal on Ctrl+C."""
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args(argv)
     try:
-        if args.command is None:
+        if bool(getattr(args, "cli", False)) and args.command in (None, "gui"):
             run_menu()
+            return 0
+        if args.command is None or args.command == "gui":
+            try:
+                from idle.gui.app import run_gui
+                return run_gui(argv)
+            except ImportError:
+                print("pygame missing. Run: uv sync")
+                return 2
         elif args.command == "type":
             _cmd_type(args)
         elif args.command == "drill":
@@ -512,3 +527,4 @@ def main(argv: list[str] | None = None) -> None:
             cmd_config(getattr(args, "edit", False))
     except KeyboardInterrupt:
         print("\nexited cleanly")
+    return 0

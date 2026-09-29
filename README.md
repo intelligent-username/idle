@@ -23,9 +23,25 @@ uv run idle
 uv run python -m idle
 uv run idle gui
 uv run idle type
+uv run idle --cli
 ```
 
-CLI subcommands still work. No separate `pip install idle[gui]` needed.
+GUI launches on `idle`, `python -m idle`, and `idle gui`. CLI subcommands still work unchanged. No separate `pip install idle[gui]` needed. Use `idle --cli` for terminal menu.
+
+## GUI controls
+
+Keyboard-first. Mouse optional.
+
+| Key | Action |
+| --- | ------ |
+| Esc | back / quit |
+| Tab | restart / confirm |
+| Enter | select / confirm |
+| Arrows | navigate lists and menus |
+| Ctrl+W | delete word |
+| Ctrl+T | test solution |
+| Ctrl+S | submit solution |
+| Ctrl+O | open in browser |
 
 Dev:
 
@@ -46,7 +62,9 @@ idle stats [--limit 20]
 idle config [--edit]
 ```
 
-Bare `idle` shows a numbered menu: `1) type  2) drill  3) leetcode  4) stats  5) quit` with `Best` and `Solved` one-liners. Menu option `1` runs `idle type` with config defaults (`time 60`, `list 200`).
+Bare `idle` launches the GUI. `idle --cli` shows a numbered menu: `1) type  2) drill  3) leetcode  4) stats  5) quit` with `Best` and `Solved` one-liners. Menu option `1` runs `idle type` with config defaults (`time 60`, `list 200`).
+
+CLI is de-emphasized but unchanged. Use GUI for practice. Use CLI for scripting.
 
 Typing:
 
