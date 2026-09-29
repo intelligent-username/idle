@@ -1,0 +1,44 @@
+{
+  "data": {
+    "problemsetQuestionList": {
+      "total": 3,
+      "questions": [
+        {
+          "acRate": 53.2,
+          "difficulty": "Easy",
+          "frontendQuestionId": "1",
+          "title": "Two Sum",
+          "titleSlug": "two-sum",
+          "topicTags": [
+            {"name": "Array", "slug": "array"},
+            {"name": "Hash Table", "slug": "hash-table"}
+          ],
+          "status": null
+        },
+        {
+          "acRate": 41.7,
+          "difficulty": "Medium",
+          "frontendQuestionId": "2",
+          "title": "Add Two Numbers",
+          "titleSlug": "add-two-numbers",
+          "topicTags": [
+            {"name": "Linked List", "slug": "linked-list"},
+            {"name": "Math", "slug": "math"}
+          ],
+          "status": "ac"
+        },
+        {
+          "acRate": 32.1,
+          "difficulty": "Hard",
+          "frontendQuestionId": "4",
+          "title": "Median of Two Sorted Arrays",
+          "titleSlug": "median-of-two-sorted-arrays",
+          "topicTags": [
+            {"name": "Array", "slug": "array"}
+          ],
+          "status": null
+        }
+      ]
+    }
+  }
+}

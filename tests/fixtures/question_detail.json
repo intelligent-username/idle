@@ -1,0 +1,23 @@
+{
+  "data": {
+    "question": {
+      "questionId": "1",
+      "questionFrontendId": "1",
+      "title": "Two Sum",
+      "titleSlug": "two-sum",
+      "content": "<p>Given an array of integers <code>nums</code> and an integer <strong>target</strong>, return <em>indices</em> of the two numbers &amp; such that they add up to target.</p><p>Constraints:</p><ul><li>2 &lt;= nums.length &lt;= 10<sup>4</sup></li><li>-10<sup>9</sup> &lt;= nums[i] &lt;= 10<sup>9</sup></li></ul><pre>Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n</pre>",
+      "difficulty": "Easy",
+      "acRate": 53.2,
+      "sampleTestCase": "[2,7,11,15]\n9",
+      "exampleTestcases": "[2,7,11,15]\n9",
+      "codeSnippets": [
+        {"lang": "Python3", "langSlug": "python3", "code": "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        pass\n"},
+        {"lang": "JavaScript", "langSlug": "javascript", "code": "var twoSum = function(nums, target) {};"}
+      ],
+      "topicTags": [
+        {"name": "Array", "slug": "array"},
+        {"name": "Hash Table", "slug": "hash-table"}
+      ]
+    }
+  }
+}
