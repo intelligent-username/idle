@@ -5,22 +5,34 @@ Keyboard-only companion for typing practice and LeetCode in a terminal pane.
 ## Requirements
 
 - Python 3.11+
+- uv
 - Terminal with minimum dimensions of 40x10
 
 ## Setup & Running
 
-1. Activate the virtual environment:
+Setup (installs CLI and GUI deps):
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -r requirements.txt
+uv sync
 ```
 
-2. Run the project:
+Run (GUI is default):
 
 ```powershell
-python -m idle
+uv run idle
+uv run python -m idle
+uv run idle gui
+uv run idle type
+```
+
+CLI subcommands still work. No separate `pip install idle[gui]` needed.
+
+Dev:
+
+```powershell
+uv run pytest -q
+uv run ruff check
+uv run mypy
 ```
 
 ## Usage
@@ -86,3 +98,4 @@ No traceback for expected cases:
 - expired login: `Session expired. Run: idle lc login`
 - empty history: `no sessions yet. Run: idle type`
 - missing editor: `could not open editor: ...`
+- missing pygame: run `uv sync`, no separate GUI install needed
