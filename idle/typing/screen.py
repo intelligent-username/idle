@@ -441,6 +441,78 @@ def run_typing_test(stdscr: Any, text: str, opts: dict[str, Any]) -> dict[str, A
             pass
 
 
+def _resolve_best(result: dict[str, Any], best: float | None) -> float | None:
+    """Return explicit best or fallback from result."""
+    if best is None and isinstance(result.get("best"), (int, float)):
+        return float(result["best"])
+    return best
+
+
+def _resolve_avg(result: dict[str, Any], seven_day_avg: float | None) -> float | None:
+    """Return explicit average or fallback from result keys."""
+    if seven_day_avg is not None:
+        return seven_day_avg
+    for key in ("seven_day_avg", "avg7", "avg_7day"):
+        val = result.get(key)
+        if isinstance(val, (int, float)):
+            return float(val)
+    return None
+
+
+def _slowest_line(per_key: dict[str, dict[str, float]]) -> str:
+    """Return slowest-keys summary line."""
+    rows = _slowest(per_key, 5)
+    if not rows:
+        return "Slowest: --"
+    parts = [f"{_disp(k)} {v:.0f}ms" for k, v in rows]
+    return "Slowest: " + ", ".join(parts)
+
+
+def _missed_line(per_key: dict[str, dict[str, float]]) -> str:
+    """Return most-missed-keys summary line."""
+    rows = _most_missed(per_key, 5)
+    if not rows:
+        return "Most missed: --"
+    parts = [f"{_disp(k)} {v * 100.0:.0f}%" for k, v in rows]
+    return "Most missed: " + ", ".join(parts)
+
+
+def _core_lines(result: dict[str, Any]) -> list[str]:
+    """Return Net Raw Acc Consistency spark slowest missed lines."""
+    net = float(result.get("net_wpm", 0.0))
+    raw = float(result.get("raw_wpm", 0.0))
+    acc = float(result.get("accuracy", 0.0))
+    cons = float(result.get("consistency", 0.0))
+    spark_vals = [float(v) for v in result.get("spark", [])]
+    per_key = result.get("per_key", {})
+    return [
+        f"Net WPM: {net:.1f}",
+        f"Raw WPM: {raw:.1f}",
+        f"Accuracy: {acc * 100.0:.1f}%",
+        f"Consistency: {cons * 100.0:.1f}%",
+        f"Sparkline: {_sparkline(spark_vals)}",
+        _slowest_line(per_key),
+        _missed_line(per_key),
+    ]
+
+
+def format_results(
+    result: dict[str, Any],
+    best: float | None = None,
+    seven_day_avg: float | None = None,
+) -> list[str]:
+    """Return Net Raw Acc Consistency spark slowest missed Best 7-day lines.
+
+    Test: format_results({"net_wpm": 50.0, "spark": [1.0]}, 50.0, 60.0)[0].startswith("Net WPM").
+    """
+    lines = _core_lines(result)
+    resolved_best = _resolve_best(result, best)
+    resolved_avg = _resolve_avg(result, seven_day_avg)
+    lines.append(f"Best: {resolved_best:.1f} WPM" if resolved_best is not None else "Best: --")
+    lines.append(f"7-day: {resolved_avg:.1f} WPM" if resolved_avg is not None else "7-day: --")
+    return lines
+
+
 def show_results(
     result: dict[str, Any],
     best: float | None = None,
@@ -450,55 +522,17 @@ def show_results(
 
     Test: show_results({"net_wpm": 50.0, "spark": [1.0]}) prints Net.
     """
-    if best is None and isinstance(result.get("best"), (int, float)):
-        best = float(result["best"])
-    if seven_day_avg is None:
-        for key in ("seven_day_avg", "avg7", "avg_7day"):
-            val = result.get(key)
-            if isinstance(val, (int, float)):
-                seven_day_avg = float(val)
-                break
-    net = float(result.get("net_wpm", 0.0))
-    raw = float(result.get("raw_wpm", 0.0))
-    acc = float(result.get("accuracy", 0.0))
-    cons = float(result.get("consistency", 0.0))
-    spark_vals = [float(v) for v in result.get("spark", [])]
-    per_key = result.get("per_key", {})
-    print(f"Net WPM: {net:.1f}")
-    print(f"Raw WPM: {raw:.1f}")
-    print(f"Accuracy: {acc * 100.0:.1f}%")
-    print(f"Consistency: {cons * 100.0:.1f}%")
-    print(f"Sparkline: {_sparkline(spark_vals)}")
-    _print_slowest(per_key)
-    _print_missed(per_key)
-    if best is None:
-        print("Best: --")
-    else:
-        print(f"Best: {best:.1f} WPM")
-    if seven_day_avg is None:
-        print("7-day: --")
-    else:
-        print(f"7-day: {seven_day_avg:.1f} WPM")
+    print("\n".join(format_results(result, best, seven_day_avg)))
 
 
 def _print_slowest(per_key: dict[str, dict[str, float]]) -> None:
     """Print top-5 slowest keys by average latency."""
-    rows = _slowest(per_key, 5)
-    if not rows:
-        print("Slowest: --")
-        return
-    parts = [f"{_disp(k)} {v:.0f}ms" for k, v in rows]
-    print("Slowest: " + ", ".join(parts))
+    print(_slowest_line(per_key))
 
 
 def _print_missed(per_key: dict[str, dict[str, float]]) -> None:
     """Print top-5 most missed keys by miss rate."""
-    rows = _most_missed(per_key, 5)
-    if not rows:
-        print("Most missed: --")
-        return
-    parts = [f"{_disp(k)} {v * 100.0:.0f}%" for k, v in rows]
-    print("Most missed: " + ", ".join(parts))
+    print(_missed_line(per_key))
 
 
 def _disp(ch: str) -> str:
