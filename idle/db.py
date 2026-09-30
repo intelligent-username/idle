@@ -163,3 +163,13 @@ def get_7day_avg(conn: sqlite3.Connection) -> float | None:
     if not row or row[0] is None:
         return None
     return float(row[0])
+
+
+def get_header_stats(conn: sqlite3.Connection) -> tuple[float | None, int]:
+    """Return Best WPM and solved count from one connection."""
+    best: float | None = get_best(conn)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM lc_progress WHERE status='solved';"
+    ).fetchone()
+    solved: int = int(row[0]) if row and row[0] is not None else 0
+    return (best, solved)
