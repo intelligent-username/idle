@@ -261,14 +261,27 @@ def _run_curses_text(text: str, opts: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+def _persist_type_result(conn: Any, mode: str, text: str, result: dict[str, Any]) -> None:
+    """Save session on open conn and print formatted results."""
+    from idle.db import get_7day_avg
+    from idle.db import get_best
+    from idle.db import save_typing_session
+    from idle.typing.screen import format_results
+
+    total: int = int(result.get("total", 0))
+    if total <= 0:
+        print("no input recorded")
+        return
+    save_typing_session(conn, mode=mode, duration_s=float(result.get("elapsed_s", 0.0)), net_wpm=float(result.get("net_wpm", 0.0)), raw_wpm=float(result.get("raw_wpm", 0.0)), accuracy=float(result.get("accuracy", 0.0)), consistency=float(result.get("consistency", 0.0)), text_len=len(text), per_key=dict(result.get("per_key", {})), per_bigram=dict(result.get("per_bigram", {})))
+    best: float | None = get_best(conn)
+    avg: float | None = get_7day_avg(conn)
+    print("\n".join(format_results(result, best, avg)))
+
+
 def _save_type_result(mode: str, text: str, result: dict[str, Any]) -> None:
     """Persist session and print results with Best and 7-day."""
     from idle.config import resolve_paths
-    from idle.db import get_7day_avg
-    from idle.db import get_best
     from idle.db import get_db
-    from idle.db import save_typing_session
-    from idle.typing import screen as scr
 
     total: int = int(result.get("total", 0))
     if total <= 0:
@@ -277,12 +290,9 @@ def _save_type_result(mode: str, text: str, result: dict[str, Any]) -> None:
     db_path, _, _ = resolve_paths()
     conn = get_db(db_path)
     try:
-        save_typing_session(conn, mode=mode, duration_s=float(result.get("elapsed_s", 0.0)), net_wpm=float(result.get("net_wpm", 0.0)), raw_wpm=float(result.get("raw_wpm", 0.0)), accuracy=float(result.get("accuracy", 0.0)), consistency=float(result.get("consistency", 0.0)), text_len=len(text), per_key=dict(result.get("per_key", {})), per_bigram=dict(result.get("per_bigram", {})))
-        best: float | None = get_best(conn)
-        avg: float | None = get_7day_avg(conn)
+        _persist_type_result(conn, mode, text, result)
     finally:
         conn.close()
-    scr.show_results(result, best, avg)
 
 
 def _cmd_type(args: argparse.Namespace) -> None:
@@ -308,16 +318,9 @@ def _cmd_type(args: argparse.Namespace) -> None:
 
 def _weak_avg(conn: Any) -> float | None:
     """Average top-K weak scores, None when no data."""
-    from idle.typing.drill import TOP_K
-    from idle.typing.drill import score_keys
+    from idle.typing.drill import weak_avg
 
-    scores: dict[str, float] = score_keys(conn)
-    if not scores:
-        return None
-    top: list[float] = sorted(scores.values(), reverse=True)[:TOP_K]
-    if not top:
-        return None
-    return sum(top) / len(top)
+    return weak_avg(conn)
 
 
 def _drill_words(word_list: int) -> list[str] | None:
@@ -370,20 +373,16 @@ def _cmd_drill() -> None:
     conn = get_db(db_path)
     try:
         text, before = _drill_text_and_before(conn, word_list)
+        if not text:
+            print("could not build drill text")
+            return
+        result: dict[str, Any] | None = _run_curses_text(text, {"mode": "drill", "stop_on_error": stop})
+        if result is None:
+            return
+        _persist_type_result(conn, "drill", text, result)
+        after: float | None = _weak_avg(conn)
     finally:
         conn.close()
-    if not text:
-        print("could not build drill text")
-        return
-    result: dict[str, Any] | None = _run_curses_text(text, {"mode": "drill", "stop_on_error": stop})
-    if result is None:
-        return
-    _save_type_result("drill", text, result)
-    conn2 = get_db(db_path)
-    try:
-        after: float | None = _weak_avg(conn2)
-    finally:
-        conn2.close()
     _print_drill_delta(before, after)
 
 
@@ -429,45 +428,25 @@ def _cmd_lc(args: argparse.Namespace) -> None:
         print("could not complete lc command (offline?). Check network and retry.")
 
 
-def _best_text() -> str:
-    """Return Best WPM one-liner value."""
-    from idle.config import resolve_paths
-    from idle.db import get_best
-    from idle.db import get_db
-
-    try:
-        conn = get_db(resolve_paths()[0])
-        try:
-            best: float | None = get_best(conn)
-        finally:
-            conn.close()
-    except OSError:
-        return "--"
-    if best is None:
-        return "--"
-    return f"{best:.1f} WPM"
-
-
-def _solved_text() -> str:
-    """Return solved count one-liner value."""
-    from idle.config import resolve_paths
-    from idle.db import get_db
-
-    try:
-        conn = get_db(resolve_paths()[0])
-        try:
-            row = conn.execute("SELECT COUNT(*) FROM lc_progress WHERE status='solved';").fetchone()
-        finally:
-            conn.close()
-    except OSError:
-        return "0"
-    count: int = int(row[0]) if row else 0
-    return str(count)
-
-
 def _menu_header() -> None:
     """Print Best WPM and solved count one-liners."""
-    print(f"Best: {_best_text()} | Solved: {_solved_text()}")
+    from idle.config import resolve_paths
+    from idle.db import get_db
+    from idle.db import get_header_stats
+
+    try:
+        conn = get_db(resolve_paths()[0])
+        try:
+            best: float | None
+            solved: int
+            best, solved = get_header_stats(conn)
+        finally:
+            conn.close()
+    except OSError:
+        print("Best: -- | Solved: 0")
+        return
+    best_text: str = f"{best:.1f} WPM" if best is not None else "--"
+    print(f"Best: {best_text} | Solved: {solved}")
 
 
 def _menu_type() -> None:
