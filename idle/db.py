@@ -1,12 +1,17 @@
 """SQLite setup with forward-only migrations."""
 
 import sqlite3
+import time
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+
+HEADER_TTL_S: float = 5.0
+
+_HEADER_CACHE: dict[str, tuple[float, str]] = {}
 
 
 def _migrate_0_to_1(conn: sqlite3.Connection) -> None:
@@ -173,3 +178,38 @@ def get_header_stats(conn: sqlite3.Connection) -> tuple[float | None, int]:
     ).fetchone()
     solved: int = int(row[0]) if row and row[0] is not None else 0
     return (best, solved)
+
+
+def _header_text(best: float | None, solved: int) -> str:
+    """Format Best and Solved one-liner."""
+    best_txt: str = f"{best:.1f} WPM" if best is not None else "--"
+    return f"Best: {best_txt} | Solved: {solved}"
+
+
+def get_cached_header(db_path: str | Path) -> str:
+    """Return cached header text, refresh via single conn after TTL."""
+    key: str = str(db_path)
+    if not key:
+        return _header_text(None, 0)
+    now: float = time.monotonic()
+    hit: tuple[float, str] | None = _HEADER_CACHE.get(key)
+    if hit is not None:
+        ts, text = hit
+        if now - ts < HEADER_TTL_S:
+            return text
+    try:
+        conn = get_db(Path(key))
+    except OSError:
+        return _header_text(None, 0)
+    try:
+        best, solved = get_header_stats(conn)
+        text = _header_text(best, solved)
+    finally:
+        conn.close()
+    _HEADER_CACHE[key] = (now, text)
+    return text
+
+
+def clear_header_cache() -> None:
+    """Clear cached header entries."""
+    _HEADER_CACHE.clear()

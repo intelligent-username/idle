@@ -47,13 +47,13 @@ def _shell_paths() -> tuple[str, dict[str, Any]]:
 
 
 def _menu_header(db_path: str) -> str:
-    """Return Best and solved header, friendly when DB missing."""
+    """Return cached Best/Solved header, refresh after TTL."""
     if not db_path:
         return "Best: -- | Solved: 0"
-    from idle.gui import screens_menu
+    from idle.db import get_cached_header
 
     try:
-        return screens_menu.load_header(db_path)
+        return get_cached_header(db_path)
     except OSError:
         return "Best: -- | Solved: 0"
 
