@@ -37,12 +37,10 @@ def get_best_value(conn: Any) -> float | None:
 
 def get_solved_count(conn: Any) -> int:
     """Return count of solved LC problems."""
-    row: Any = conn.execute(
-        "SELECT COUNT(*) FROM lc_progress WHERE status='solved';"
-    ).fetchone()
-    if not row or row[0] is None:
-        return 0
-    return int(row[0])
+    from idle.db import get_header_stats
+
+    _, solved = get_header_stats(conn)
+    return solved
 
 
 def format_header(best: float | None, solved: int) -> str:
@@ -54,13 +52,15 @@ def format_header(best: float | None, solved: int) -> str:
 def load_header(db_path: str | Path) -> str:
     """Load header text from DB path, friendly on empty or error."""
     from idle.db import get_db
+    from idle.db import get_header_stats
 
     try:
         conn = get_db(Path(db_path))
     except OSError:
         return format_header(None, 0)
     try:
-        return format_header(get_best_value(conn), get_solved_count(conn))
+        best, solved = get_header_stats(conn)
+        return format_header(best, solved)
     finally:
         conn.close()
 
