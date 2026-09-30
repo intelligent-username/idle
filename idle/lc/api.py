@@ -193,22 +193,46 @@ def _load_cached_problems(conn: Any) -> list[dict[str, Any]] | None:
     ).fetchall()
     if not rows:
         return None
+    out: list[dict[str, Any]] = []
     for row in rows:
         if not _is_cache_fresh(str(row[5])):
             return None
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        tags: Any = json.loads(str(row[4])) if row[4] else []
+        raw_tags: Any = json.loads(str(row[4])) if row[4] else []
+        tags: list[Any] = raw_tags if isinstance(raw_tags, list) else []
         out.append(
             {
                 "id": str(row[0]),
                 "slug": str(row[1]),
                 "title": str(row[2]),
                 "difficulty": str(row[3]),
-                "tags": tags if isinstance(tags, list) else [],
+                "tags": tags,
             }
         )
     return out
+
+
+def _build_problem_rows(
+    problems: list[dict[str, Any]], now: str
+) -> list[tuple[int, str, str, str, str, str]]:
+    """Build upsert tuples skipping bad ids."""
+    rows: list[tuple[int, str, str, str, str, str]] = []
+    for item in problems:
+        tags_json: str = json.dumps(item.get("tags", []))
+        try:
+            pid: int = int(str(item.get("id", "0")))
+        except ValueError:
+            continue
+        rows.append(
+            (
+                pid,
+                str(item.get("slug", "")),
+                str(item.get("title", "")),
+                str(item.get("difficulty", "")),
+                tags_json,
+                now,
+            )
+        )
+    return rows
 
 
 def _save_problems(conn: Any, problems: list[dict[str, Any]]) -> None:
@@ -217,28 +241,18 @@ def _save_problems(conn: Any, problems: list[dict[str, Any]]) -> None:
     from datetime import timezone
 
     now: str = datetime.now(timezone.utc).isoformat()
-    for item in problems:
-        tags_json: str = json.dumps(item.get("tags", []))
-        try:
-            pid: int = int(str(item.get("id", "0")))
-        except ValueError:
-            continue
-        conn.execute(
-            "INSERT INTO lc_problems(id, slug, title, difficulty,"
-            " tags_json, cached_at) VALUES(?,?,?,?,?,?)"
-            " ON CONFLICT(slug) DO UPDATE SET"
-            " id=excluded.id, title=excluded.title,"
-            " difficulty=excluded.difficulty,"
-            " tags_json=excluded.tags_json, cached_at=excluded.cached_at;",
-            (
-                pid,
-                str(item.get("slug", "")),
-                str(item.get("title", "")),
-                str(item.get("difficulty", "")),
-                tags_json,
-                now,
-            ),
-        )
+    rows = _build_problem_rows(problems, now)
+    if not rows:
+        return
+    conn.executemany(
+        "INSERT INTO lc_problems(id, slug, title, difficulty,"
+        " tags_json, cached_at) VALUES(?,?,?,?,?,?)"
+        " ON CONFLICT(slug) DO UPDATE SET"
+        " id=excluded.id, title=excluded.title,"
+        " difficulty=excluded.difficulty,"
+        " tags_json=excluded.tags_json, cached_at=excluded.cached_at;",
+        rows,
+    )
     conn.commit()
 
 
