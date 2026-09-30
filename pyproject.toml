@@ -8,9 +8,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-windows = ["windows-curses"]
 dev = ["pytest", "ruff", "mypy"]
-gui = ["pygame>=2.5"]
 
 [project.scripts]
 idle = "idle.__main__:main"

@@ -433,21 +433,3 @@ def poll_verdict(submission_id: str | int) -> dict[str, Any]:
         time.sleep(1.0)
         waited += 1.0
     return last
-
-
-def leetcode_cli_fallback(args: list[str]) -> str:
-    """Run leetcode-cli binary for repeated API failures."""
-    import subprocess
-
-    try:
-        done = subprocess.run(
-            ["leetcode", *args],
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError("leetcode-cli not installed") from exc
-    if done.returncode != 0:
-        raise RuntimeError(f"leetcode-cli failed: {done.stderr.strip()}")
-    return done.stdout
