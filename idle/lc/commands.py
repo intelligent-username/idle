@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any
 
+from idle.lc.scaffold import _resolve_workdir, strip_header
+
 RELOGIN_MSG = "Session expired. Run: idle lc login"
 DIFF_MAP = {"e": "Easy", "m": "Medium", "h": "Hard"}
 
@@ -291,26 +293,10 @@ def _lc_lang() -> str:
     return "python3"
 
 
-def _solution_base(detail: dict[str, Any]) -> Path:
-    """Resolve workdir folder path for detail."""
-    from idle.config import load_config
-
-    fid: str = str(detail.get("id", ""))
-    slug: str = str(detail.get("slug", ""))
-    cfg: dict[str, Any] = load_config()
-    raw_wd: str = "~/leetcode"
-    lc: Any = cfg.get("lc", {})
-    if isinstance(lc, dict) and lc.get("workdir"):
-        raw_wd = str(lc["workdir"])
-    return Path(raw_wd).expanduser() / f"{fid}-{slug}"
-
-
 def _read_pair(
     detail: dict[str, Any], sol: Path, tst: Path
 ) -> tuple[dict[str, Any], str, str]:
     """Read code and data input for detail."""
-    from idle.lc.scaffold import strip_header
-
     code: str = strip_header(sol.read_text(encoding="utf-8"))
     data_in: str = tst.read_text(encoding="utf-8") if tst.exists() else ""
     if not data_in.strip():
@@ -329,7 +315,9 @@ def _load_solution(
         detail: dict[str, Any] | None = _resolve_detail(id_or_slug)
         if detail is None:
             return None
-        base: Path = _solution_base(detail)
+        fid: str = str(detail.get("id", ""))
+        slug: str = str(detail.get("slug", ""))
+        base: Path = _resolve_workdir(None) / f"{fid}-{slug}"
         sol: Path = base / "solution.py"
         if not sol.exists():
             print(f"no solution yet. Run: idle lc start {detail.get('slug')}")

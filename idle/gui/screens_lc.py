@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from idle.gui.widgets import ScrollableList, Textbox
+from idle.lc.commands import RELOGIN_MSG
+from idle.lc.scaffold import strip_header
 
 __all__: list[str] = [
     "LcFilters",
@@ -36,8 +38,6 @@ __all__: list[str] = [
     "handle_lc_login",
 ]
 
-RELOGIN_MSG: str = "Session expired. Run: idle lc login"
-OFFLINE_MSG: str = "could not fetch (offline?). Check network and retry."
 LOGIN_SAVED_MSG: str = "saved login"
 LOGIN_EMPTY_MSG: str = "login cancelled: empty session"
 LIMIT_MIN: int = 5
@@ -391,7 +391,6 @@ def run_test_action(
     from idle.lc import api as lc_api
     from idle.lc.api import AuthExpiredError
     from idle.lc.commands import _record_attempt
-    from idle.lc.scaffold import strip_header
 
     slug: str = str(detail.get("slug", ""))
     clean: str = strip_header(code)
@@ -422,7 +421,6 @@ def run_submit_action(
     from idle.lc import api as lc_api
     from idle.lc.api import AuthExpiredError
     from idle.lc.commands import _mark_solved, _record_attempt
-    from idle.lc.scaffold import strip_header
 
     slug: str = str(detail.get("slug", ""))
     clean: str = strip_header(code)
