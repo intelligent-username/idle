@@ -204,18 +204,24 @@ def _cell_map(text: str, width: int) -> list[tuple[int, str, int, int]]:
     return cells
 
 
-def _draw_body(stdscr: Any, text: str, typed: list[str], width: int) -> tuple[int, int]:
+def _draw_body(
+    stdscr: Any,
+    text: str,
+    typed: list[str],
+    width: int,
+    cells: list[tuple[int, str, int, int]] | None = None,
+) -> tuple[int, int]:
     """Draw wrapped chars, return cursor yx."""
+    if cells is None:
+        cells = _cell_map(text, width)
     pos = len(typed)
     cur = (2, 0)
-    for i, exp, row, col in _cell_map(text, width):
+    for i, exp, row, col in cells:
         if i == pos:
             cur = (row, col)
         _put(stdscr, row, col, exp, _color_for(i, typed, text))
-    if pos >= len(text):
-        last = _cell_map(text, width)
-        if last:
-            cur = (last[-1][2], last[-1][3] + 1)
+    if pos >= len(text) and cells:
+        cur = (cells[-1][2], cells[-1][3] + 1)
     return cur
 
 
@@ -232,7 +238,8 @@ def _draw(stdscr: Any, text: str, state: dict[str, Any], header: str) -> tuple[i
         pass
     _draw_header(stdscr, header)
     width = max(1, stdscr.getmaxyx()[1])
-    cur = _draw_body(stdscr, text, state["typed"], width)
+    cells = _cell_map(text, width)
+    cur = _draw_body(stdscr, text, state["typed"], width, cells)
     try:
         stdscr.move(cur[0], cur[1])
     except Exception:
