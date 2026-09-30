@@ -103,6 +103,17 @@ def _top_set(scores: dict[str, float], k: int = TOP_K) -> set[str]:
     return set(ranked[:k])
 
 
+def weak_avg(conn: sqlite3.Connection, last_n: int = LAST_N, k: int = TOP_K) -> float | None:
+    """Return mean of top-k weak scores, None when no data."""
+    scores: dict[str, float] = score_keys(conn, last_n)
+    if not scores:
+        return None
+    top: list[float] = sorted(scores.values(), reverse=True)[:max(k, 0)]
+    if not top:
+        return None
+    return sum(top) / len(top)
+
+
 def _word_weight(word: str, weak_chars: set[str], weak_bigrams: set[str]) -> float:
     hits: int = sum(1 for ch in word if ch in weak_chars)
     hits += sum(1 for bg in _bigrams_of(word) if bg in weak_bigrams)
