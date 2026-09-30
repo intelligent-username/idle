@@ -10,16 +10,14 @@ from idle.db import get_7day_avg
 from idle.db import get_best
 from idle.db import save_typing_session
 from idle.typing.drill import generate_drill_text
-from idle.typing.drill import score_keys
+from idle.typing.drill import weak_avg
 from idle.typing.engine import calc_accuracy
 from idle.typing.engine import calc_consistency
 from idle.typing.engine import calc_net_wpm
 from idle.typing.engine import calc_raw_wpm
 from idle.typing.engine import Keystroke
 from idle.typing.engine import update_stats
-from idle.typing.screen import _most_missed
-from idle.typing.screen import _slowest
-from idle.typing.screen import _sparkline
+from idle.typing.screen import format_results
 from idle.typing.texts import load_words
 from idle.typing.texts import make_text
 
@@ -130,13 +128,7 @@ def drill_weak_avg(conn: sqlite3.Connection) -> float | None:
 
     Test: empty conn gives None.
     """
-    scores: dict[str, float] = score_keys(conn)
-    if not scores:
-        return None
-    top: list[float] = sorted(scores.values(), reverse=True)[:12]
-    if not top:
-        return None
-    return sum(top) / len(top)
+    return weak_avg(conn)
 
 
 def new_typing_session(
@@ -327,11 +319,6 @@ def restart_session(session: TypingSession) -> None:
     session.result = None
 
 
-def _disp(ch: str) -> str:
-    """Show space key visibly."""
-    return "space" if ch == " " else ch
-
-
 def result_lines(session: TypingSession) -> list[str]:
     """Format results with sparkline slowest missed Best 7-day.
 
@@ -339,47 +326,9 @@ def result_lines(session: TypingSession) -> list[str]:
     then result_lines(s)[0] starts with "Net WPM".
     """
     res: dict[str, Any] = session.result or {}
-    net: float = float(res.get("net_wpm", 0.0))
-    raw: float = float(res.get("raw_wpm", 0.0))
-    acc: float = float(res.get("accuracy", 0.0))
-    cons: float = float(res.get("consistency", 0.0))
-    spark_vals: list[float] = [float(v) for v in res.get("spark", [])]
-    per_key: dict[str, dict[str, float]] = dict(res.get("per_key", {}))
-    lines: list[str] = [
-        f"Net WPM: {net:.1f}",
-        f"Raw WPM: {raw:.1f}",
-        f"Accuracy: {acc * 100.0:.1f}%",
-        f"Consistency: {cons * 100.0:.1f}%",
-        f"Sparkline: {_sparkline(spark_vals)}",
-    ]
-    lines.append(_slowest_line(per_key))
-    lines.append(_missed_line(per_key))
-    if session.best is None:
-        lines.append("Best: --")
-    else:
-        lines.append(f"Best: {session.best:.1f} WPM")
-    if session.seven_day_avg is None:
-        lines.append("7-day: --")
-    else:
-        lines.append(f"7-day: {session.seven_day_avg:.1f} WPM")
+    lines: list[str] = format_results(res, session.best, session.seven_day_avg)
     lines.append("Tab/Enter restart  Esc back")
     return lines
-
-
-def _slowest_line(per_key: dict[str, dict[str, float]]) -> str:
-    """Format top-5 slowest keys line."""
-    rows: list[tuple[str, float]] = _slowest(per_key, 5)
-    if not rows:
-        return "Slowest: --"
-    return "Slowest: " + ", ".join(f"{_disp(k)} {v:.0f}ms" for k, v in rows)
-
-
-def _missed_line(per_key: dict[str, dict[str, float]]) -> str:
-    """Format top-5 most missed keys line."""
-    rows: list[tuple[str, float]] = _most_missed(per_key, 5)
-    if not rows:
-        return "Most missed: --"
-    return "Most missed: " + ", ".join(f"{_disp(k)} {v * 100.0:.0f}%" for k, v in rows)
 
 
 def _check_finished(session: TypingSession, now: float) -> None:
