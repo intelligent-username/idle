@@ -476,3 +476,217 @@ def test_draw_smoke_headless() -> None:
         "active": 0,
     }
     screens_stats.draw_stats(surface, state, empty)
+
+
+def _sample_result() -> dict[str, Any]:
+    """Build result dict for format tests."""
+    return {
+        "net_wpm": 50.0,
+        "raw_wpm": 55.0,
+        "accuracy": 0.95,
+        "consistency": 0.9,
+        "spark": [40.0, 50.0, 60.0],
+        "per_key": {
+            "a": {"attempts": 10.0, "misses": 1.0, "total_latency_ms": 500.0},
+        },
+        "elapsed_s": 60.0,
+    }
+
+
+def test_format_results_headline() -> None:
+    """format_results starts with Net WPM."""
+    from idle.typing.screen import format_results
+
+    lines: list[str] = format_results(_sample_result(), 50.0, 60.0)
+    assert lines[0].startswith("Net WPM")
+    assert any(line.startswith("Best: 50.0") for line in lines)
+    assert any(line.startswith("7-day: 60.0") for line in lines)
+
+
+def test_show_results_matches_format(capsys: Any) -> None:
+    """show_results prints joined format_results."""
+    from idle.typing.screen import format_results
+    from idle.typing.screen import show_results
+
+    result: dict[str, Any] = _sample_result()
+    expected: list[str] = format_results(result, 50.0, 60.0)
+    show_results(result, 50.0, 60.0)
+    out: str = capsys.readouterr().out
+    assert out == "\n".join(expected) + "\n"
+
+
+def test_result_lines_reuses_format() -> None:
+    """GUI result_lines equals format plus hint."""
+    from idle.typing.screen import format_results
+
+    session: screens_typing.TypingSession = screens_typing.new_session("hi")
+    session.result = _sample_result()
+    session.best = 50.0
+    session.seven_day_avg = 60.0
+    lines: list[str] = screens_typing.result_lines(session)
+    expected: list[str] = format_results(session.result, 50.0, 60.0)
+    assert lines[:-1] == expected
+    assert lines[-1] == "Tab/Enter restart  Esc back"
+
+
+def test_drill_weak_avg_delegates(tmp_path: Path) -> None:
+    """GUI drill_weak_avg matches canonical weak_avg."""
+    from idle.typing.drill import weak_avg
+
+    conn: sqlite3.Connection = get_db(tmp_path / "gui_weak.db")
+    try:
+        assert screens_typing.drill_weak_avg(conn) is None
+        assert weak_avg(conn) is None
+    finally:
+        conn.close()
+
+
+class _FakeCurses:
+    """Minimal stdscr double for draw tests."""
+
+    def getmaxyx(self) -> tuple[int, int]:
+        """Return fixed terminal size."""
+        return (24, 80)
+
+    def clear(self) -> None:
+        """No-op clear."""
+        return None
+
+    def move(self, y: int, x: int) -> None:
+        """No-op move."""
+        return None
+
+    def refresh(self) -> None:
+        """No-op refresh."""
+        return None
+
+    def addstr(self, y: int, x: int, s: str, *args: Any) -> None:
+        """No-op addstr."""
+        return None
+
+
+def test_draw_single_cell_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_draw computes _cell_map once per frame."""
+    from idle.typing import screen as scr_mod
+
+    orig: Any = scr_mod._cell_map
+    calls: list[int] = []
+
+    def _counting(text: str, width: int) -> Any:
+        calls.append(1)
+        return orig(text, width)
+
+    monkeypatch.setattr(scr_mod, "_cell_map", _counting)
+    fake: Any = _FakeCurses()
+    state: dict[str, Any] = {"typed": list("hi")}
+    scr_mod._draw(fake, "hi there", state, "WPM 10")
+    assert len(calls) == 1
+
+
+def _seed_lc_rows() -> list[dict[str, Any]]:
+    """Return 3 rows for cache tests."""
+    return [
+        {"id": "1", "slug": "two-sum", "title": "Two Sum",
+         "difficulty": "Easy", "tags": ["array"]},
+        {"id": "2", "slug": "add-two", "title": "Add Two",
+         "difficulty": "Medium", "tags": ["linked-list"]},
+        {"id": "3", "slug": "hard-p", "title": "Hard P",
+         "difficulty": "Hard", "tags": ["dp"]},
+    ]
+
+
+def test_lc_cache_fresh_and_stale(tmp_path: Path) -> None:
+    """Fresh rows load, stale row gives None."""
+    from idle.lc import api as lc_api
+
+    conn: sqlite3.Connection = get_db(tmp_path / "lc_cache.db")
+    try:
+        assert lc_api._load_cached_problems(conn) is None
+        lc_api._save_problems(conn, _seed_lc_rows())
+        fresh: Any = lc_api._load_cached_problems(conn)
+        assert fresh is not None
+        assert len(fresh) == 3
+        assert fresh[0]["slug"] == "two-sum"
+        assert "array" in fresh[0]["tags"]
+        conn.execute(
+            "UPDATE lc_problems SET cached_at='2000-01-01T00:00:00+00:00';"
+        )
+        conn.commit()
+        assert lc_api._load_cached_problems(conn) is None
+    finally:
+        conn.close()
+
+
+def test_lc_save_single_executemany(tmp_path: Path) -> None:
+    """_save_problems upserts 3 rows via one executemany."""
+    from idle.lc import api as lc_api
+
+    conn: sqlite3.Connection = get_db(tmp_path / "lc_exec.db")
+    try:
+        calls: list[int] = []
+        orig: Any = conn.executemany
+
+        def _counting(sql: str, seq: Any) -> Any:
+            calls.append(1)
+            return orig(sql, seq)
+
+        import unittest.mock as _mock
+
+        with _mock.patch.object(conn, "executemany", _counting):
+            lc_api._save_problems(conn, _seed_lc_rows())
+        assert len(calls) == 1
+        row = conn.execute("SELECT COUNT(*) FROM lc_problems;").fetchone()
+        assert int(row[0]) == 3
+    finally:
+        conn.close()
+
+
+def test_header_ttl_single_open(tmp_path: Path) -> None:
+    """Menu header within TTL opens DB once."""
+    from idle import db as db_mod
+
+    db_file: Path = tmp_path / "gui_hdr.db"
+    conn: sqlite3.Connection = get_db(db_file)
+    try:
+        save_typing_session(
+            conn, mode="time", duration_s=60.0, net_wpm=70.0,
+            raw_wpm=75.0, accuracy=0.9, consistency=0.9,
+            text_len=100, per_key={}, per_bigram={},
+        )
+        conn.execute(
+            "INSERT INTO lc_progress(problem_id, status)"
+            " VALUES(1, 'solved');"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    db_mod.clear_header_cache()
+    opens: list[int] = []
+    orig: Any = db_mod.get_db
+
+    def _counting(path: Path) -> Any:
+        opens.append(1)
+        return orig(path)
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(db_mod, "get_db", _counting):
+        first: str = gui_app._menu_header(str(db_file))
+        second: str = gui_app._menu_header(str(db_file))
+    assert first == second
+    assert len(opens) == 1
+    assert "70.0" in first
+    assert "Solved: 1" in first
+    db_mod.clear_header_cache()
+
+
+def test_no_leetcode_cli_fallback() -> None:
+    """Deleted fallback has no import or attribute."""
+    import importlib.util
+
+    assert importlib.util.find_spec("idle.lc.api") is not None
+    from idle.lc import api as lc_api
+
+    assert hasattr(lc_api, "leetcode_cli_fallback") is False
+    with pytest.raises(ImportError):
+        from idle.lc.api import leetcode_cli_fallback  # type: ignore[attr-defined] # noqa: F401

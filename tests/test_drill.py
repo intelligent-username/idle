@@ -74,3 +74,46 @@ def test_latency_influences_ranking(tmp_path: Path) -> None:
         assert scores["b"] > scores["a"]
     finally:
         conn.close()
+
+
+def test_weak_avg_empty_returns_none(tmp_path: Path) -> None:
+    """Empty DB has no weak average."""
+    from idle.typing.drill import weak_avg
+
+    conn: sqlite3.Connection = get_db(tmp_path / "w_empty.db")
+    try:
+        assert weak_avg(conn) is None
+    finally:
+        conn.close()
+
+
+def test_weak_avg_seeded_parity(tmp_path: Path) -> None:
+    """Seeded weak_avg matches manual top-k mean."""
+    from idle.typing.drill import TOP_K
+    from idle.typing.drill import weak_avg
+
+    conn: sqlite3.Connection = _weak_db(tmp_path / "w_seed.db")
+    try:
+        scores: dict[str, float] = score_keys(conn)
+        assert scores
+        ranked: list[float] = sorted(scores.values(), reverse=True)[:TOP_K]
+        expected: float = sum(ranked) / len(ranked)
+        got: float | None = weak_avg(conn)
+        assert got is not None
+        assert got == expected
+    finally:
+        conn.close()
+
+
+def test_weak_avg_respects_k(tmp_path: Path) -> None:
+    """k=1 gives max score, k=0 gives None."""
+    from idle.typing.drill import weak_avg
+
+    conn: sqlite3.Connection = _weak_db(tmp_path / "w_k.db")
+    try:
+        scores: dict[str, float] = score_keys(conn)
+        top1: float | None = weak_avg(conn, k=1)
+        assert top1 == max(scores.values())
+        assert weak_avg(conn, k=0) is None
+    finally:
+        conn.close()

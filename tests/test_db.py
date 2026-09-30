@@ -179,3 +179,107 @@ def test_get_7day_avg_filters_old(tmp_path: Path) -> None:
         assert avg == 75.0
     finally:
         conn.close()
+
+
+def _seed_header_db(conn: sqlite3.Connection) -> None:
+    """Seed Best 80 and 2 solved rows."""
+    _save(conn, net_wpm=50.0)
+    _save(conn, net_wpm=80.0)
+    conn.execute(
+        "INSERT INTO lc_progress(problem_id, status)"
+        " VALUES(1, 'solved');"
+    )
+    conn.execute(
+        "INSERT INTO lc_progress(problem_id, status)"
+        " VALUES(2, 'solved');"
+    )
+    conn.execute(
+        "INSERT INTO lc_progress(problem_id, status)"
+        " VALUES(3, 'todo');"
+    )
+    conn.commit()
+
+
+def test_get_header_stats_empty(tmp_path: Path) -> None:
+    """Empty DB gives None Best and zero solved."""
+    from idle.db import get_header_stats
+
+    conn: sqlite3.Connection = get_db(tmp_path / "hdr_empty.db")
+    try:
+        assert get_header_stats(conn) == (None, 0)
+    finally:
+        conn.close()
+
+
+def test_get_header_stats_seeded(tmp_path: Path) -> None:
+    """Seeded DB returns Best 80 and solved 2."""
+    from idle.db import get_header_stats
+
+    conn: sqlite3.Connection = get_db(tmp_path / "hdr_seed.db")
+    try:
+        _seed_header_db(conn)
+        best: float | None
+        solved: int
+        best, solved = get_header_stats(conn)
+        assert best == 80.0
+        assert solved == 2
+    finally:
+        conn.close()
+
+
+def test_get_cached_header_ttl_single_open(tmp_path: Path) -> None:
+    """Second load within TTL reuses cache with one open."""
+    from typing import Any
+
+    from idle import db as db_mod
+
+    db_file: Path = tmp_path / "hdr_ttl.db"
+    conn: sqlite3.Connection = get_db(db_file)
+    try:
+        _seed_header_db(conn)
+    finally:
+        conn.close()
+    db_mod.clear_header_cache()
+    opens: list[int] = []
+    orig: Any = db_mod.get_db
+
+    def _counting(path: Path) -> Any:
+        opens.append(1)
+        return orig(path)
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(db_mod, "get_db", _counting):
+        first: str = db_mod.get_cached_header(db_file)
+        second: str = db_mod.get_cached_header(db_file)
+    assert first == second
+    assert len(opens) == 1
+    assert "80.0" in first
+    assert "Solved: 2" in first
+    db_mod.clear_header_cache()
+
+
+def test_get_cached_header_ttl_expiry_refreshes(tmp_path: Path) -> None:
+    """Expired TTL forces refresh with new Best."""
+    from idle import db as db_mod
+
+    db_file: Path = tmp_path / "hdr_exp.db"
+    conn: sqlite3.Connection = get_db(db_file)
+    try:
+        _seed_header_db(conn)
+    finally:
+        conn.close()
+    db_mod.clear_header_cache()
+    first: str = db_mod.get_cached_header(db_file)
+    assert "80.0" in first
+    conn2: sqlite3.Connection = get_db(db_file)
+    try:
+        _save(conn2, net_wpm=99.0)
+    finally:
+        conn2.close()
+    cached: str = db_mod.get_cached_header(db_file)
+    assert cached == first
+    db_mod.clear_header_cache()
+    refreshed: str = db_mod.get_cached_header(db_file)
+    assert "99.0" in refreshed
+    db_mod.clear_header_cache()
