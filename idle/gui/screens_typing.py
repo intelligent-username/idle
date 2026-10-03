@@ -396,19 +396,8 @@ def _handle_return_key(key: int, session: TypingSession, now: float) -> str | No
     return "finished" if session.finished else None
 
 
-def _handle_unicode(event: Any, session: TypingSession, now: float) -> str | None:
-    """Fold printable unicode fallback into session."""
-    uni: str = str(getattr(event, "unicode", ""))
-    if len(uni) != 1 or not uni.isprintable():
-        return None
-    _run_session(session, uni, now)
-    sample_spark(session, now)
-    _check_finished(session, now)
-    return "finished" if session.finished else None
-
-
 def _handle_keydown(event: Any, session: TypingSession, now: float) -> str | None:
-    """Route KEYDOWN edits, return, unicode, or back."""
+    """Route KEYDOWN edits, return, or back."""
     import pygame
 
     key: int = int(getattr(event, "key", 0))
@@ -421,7 +410,7 @@ def _handle_keydown(event: Any, session: TypingSession, now: float) -> str | Non
     ret: str | None = _handle_return_key(key, session, now)
     if ret is not None:
         return ret
-    return _handle_unicode(event, session, now)
+    return None
 
 
 def _handle_live_key(event: Any, session: TypingSession, now: float) -> str | None:

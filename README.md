@@ -20,10 +20,17 @@ Run (GUI is default):
 
 ```powershell
 uv run idle
+
+# Or
 uv run python -m idle
 uv run idle gui
-uv run idle type
+
+# To run in terminal mode
 uv run idle --cli
+
+# To skip directly to typing practice:
+uv run idle type
+
 ```
 
 GUI launches on `idle`, `python -m idle`, and `idle gui`. CLI subcommands still work unchanged. No separate `pip install idle[gui]` needed. Use `idle --cli` for terminal menu.
