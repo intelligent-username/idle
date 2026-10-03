@@ -117,3 +117,18 @@ def test_weak_avg_respects_k(tmp_path: Path) -> None:
         assert weak_avg(conn, k=0) is None
     finally:
         conn.close()
+
+
+def test_drill_generates_sequences_and_real_words(tmp_path: Path) -> None:
+    """Drill produces nonsensical sequences and real words with weak keys."""
+    conn: sqlite3.Connection = _weak_db(tmp_path / "w_mix.db")
+    try:
+        dictionary = ["apple", "zebra", "banana", "puzzle", "orange", "grape", "zoom", "zero"]
+        text: str = generate_drill_text(conn, dictionary, length=20, rng=random.Random(42))
+        tokens = text.split()
+        assert len(tokens) == 20
+        # Check that 'z' is featured in tokens (both character drills and real words)
+        z_tokens = [t for t in tokens if "z" in t]
+        assert len(z_tokens) >= 10
+    finally:
+        conn.close()

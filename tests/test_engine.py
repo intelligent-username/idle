@@ -84,3 +84,13 @@ def test_update_stats_no_bigram_without_prev() -> None:
     per_bigram: dict[str, dict[str, float]] = {}
     update_stats(Keystroke("b", "b", 20.0, True), per_key, per_bigram)
     assert per_bigram == {}
+
+
+def test_make_text_realistic_sentences() -> None:
+    """make_text generates realistic capitalized sentences by default."""
+    from idle.typing.texts import make_text
+
+    text = make_text("time", num_words=30)
+    assert len(text.split()) >= 30
+    assert text[0].isupper()
+    assert "." in text

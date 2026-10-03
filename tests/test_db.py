@@ -118,6 +118,30 @@ def test_save_typing_session_persists(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_delete_typing_session(tmp_path: Path) -> None:
+    from idle.db import delete_typing_session
+
+    conn: sqlite3.Connection = get_db(tmp_path / "idle.db")
+    try:
+        session_id: int = _save(conn, net_wpm=60.0)
+        assert session_id >= 1
+        delete_typing_session(conn, session_id)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM typing_sessions WHERE id = ?;", (session_id,)
+        ).fetchone()
+        assert int(row[0]) == 0
+        keys = conn.execute(
+            "SELECT COUNT(*) FROM key_stats WHERE session_id = ?;", (session_id,)
+        ).fetchone()
+        assert int(keys[0]) == 0
+        bigrams = conn.execute(
+            "SELECT COUNT(*) FROM bigram_stats WHERE session_id = ?;", (session_id,)
+        ).fetchone()
+        assert int(bigrams[0]) == 0
+    finally:
+        conn.close()
+
+
 def test_save_empty_stats_still_inserts_session(tmp_path: Path) -> None:
     conn: sqlite3.Connection = get_db(tmp_path / "idle.db")
     try:

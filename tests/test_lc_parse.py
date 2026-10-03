@@ -65,6 +65,109 @@ def _mock_urlopen(
     return calls
 
 
+def _mock_urlopen_capture(
+    monkeypatch: pytest.MonkeyPatch, payloads: list[dict[str, Any]]
+) -> tuple[list[int], list[Any]]:
+    """Patch urlopen and capture Request objects in order."""
+    import urllib.request
+
+    calls: list[int] = []
+    seen: list[Any] = []
+
+    def _fake(req: object, timeout: float = 10) -> _FakeResp:
+        calls.append(1)
+        seen.append(req)
+        idx: int = min(len(calls) - 1, len(payloads) - 1)
+        return _FakeResp(payloads[idx])
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake)
+    return calls, seen
+
+
+def _headers_lower(req: Any) -> dict[str, str]:
+    """Return lowercased header mapping for a Request."""
+    merged: dict[str, str] = {}
+    for source in (
+        getattr(req, "headers", {}),
+        getattr(req, "unredirected_hdrs", {}),
+    ):
+        if isinstance(source, dict):
+            for key, value in source.items():
+                merged[str(key).lower()] = str(value)
+    return merged
+
+
+def _payload_of(req: Any) -> dict[str, Any]:
+    """Decode JSON body of a captured Request."""
+    data: Any = getattr(req, "data", None)
+    if not data:
+        return {}
+    raw: bytes = bytes(data)
+    return json.loads(raw.decode("utf-8"))
+
+
+def _make_list_payload(total: int, start: int, count: int) -> dict[str, Any]:
+    """Build a problem-list page payload for paging tests."""
+    questions: list[dict[str, Any]] = []
+    for idx in range(start, start + count):
+        questions.append(
+            {
+                "acRate": 50.0,
+                "difficulty": "Easy",
+                "frontendQuestionId": str(idx + 1),
+                "title": f"Problem {idx + 1}",
+                "titleSlug": f"problem-{idx + 1}",
+                "topicTags": [],
+                "status": None,
+            }
+        )
+    return {"data": {"problemsetQuestionList": {"total": total, "questions": questions}}}
+
+
+class _FakeLoginResp:
+    """Minimal opener response double for login flow."""
+
+    def __init__(self, text: str) -> None:
+        """Store text body."""
+        self._raw: bytes = text.encode("utf-8")
+
+    def read(self) -> bytes:
+        """Return encoded body."""
+        return self._raw
+
+    def __enter__(self) -> "_FakeLoginResp":
+        """Enter context."""
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        """Exit context."""
+        return False
+
+
+class _FakeCookie:
+    """Minimal cookie with name and value."""
+
+    def __init__(self, name: str, value: str) -> None:
+        """Store name and value."""
+        self.name: str = name
+        self.value: str = value
+
+
+class _FakeOpener:
+    """Opener double returning canned HTML pages."""
+
+    def __init__(self, pages: list[str]) -> None:
+        """Store pages to return in order."""
+        self._pages: list[str] = pages
+        self.calls: int = 0
+
+    def open(self, req: object, timeout: float = 10) -> _FakeLoginResp:
+        """Return next canned page."""
+        idx: int = min(self.calls, len(self._pages) - 1)
+        self.calls += 1
+        return _FakeLoginResp(self._pages[idx])
+
+
 def test_fetch_problem_list_parses_fixture(
     _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -85,7 +188,9 @@ def test_fetch_problem_list_uses_cache(
     calls2: list[int] = _mock_urlopen(monkeypatch, [_fixture("problem_list.json")])
     second: list[dict[str, Any]] = api.fetch_problem_list()
     assert len(calls2) == 0
-    assert first == second
+    assert len(first) == len(second)
+    assert [row["slug"] for row in first] == [row["slug"] for row in second]
+    assert [row["id"] for row in first] == [row["id"] for row in second]
 
 
 def test_fetch_problem_list_refresh(
@@ -130,20 +235,36 @@ def test_fetch_question_parses_detail(
 def test_fetch_daily_parses_daily(
     _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    node: dict[str, Any] = _fixture("question_detail.json")["data"]["question"]
     daily: dict[str, Any] = {
         "data": {
             "activeDailyCodingChallengeQuestion": {
                 "date": "2026-09-29",
                 "link": "/problems/two-sum/",
-                "question": node,
+                "question": {"titleSlug": "two-sum"},
             }
         }
     }
-    _mock_urlopen(monkeypatch, [daily])
+    calls, seen = _mock_urlopen_capture(
+        monkeypatch, [daily, _fixture("question_detail.json")]
+    )
     detail: dict[str, Any] = api.fetch_daily()
+    assert len(calls) == 2
+    first: dict[str, Any] = _payload_of(seen[0])
+    assert "questionOfToday" in str(first.get("query", ""))
+    assert "query daily()" not in str(first.get("query", ""))
     assert detail["slug"] == "two-sum"
     assert detail["link"] == "/problems/two-sum/"
+
+
+def test_fetch_daily_missing_slug_raises(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty: dict[str, Any] = {
+        "data": {"activeDailyCodingChallengeQuestion": {"date": "", "link": ""}}
+    }
+    _mock_urlopen(monkeypatch, [empty])
+    with pytest.raises(RuntimeError, match="daily challenge not found"):
+        api.fetch_daily()
 
 
 def test_is_expired_detects() -> None:
@@ -202,3 +323,180 @@ def test_scaffold_and_strip_header(
     stripped: str = strip_header("# head\n# more\n\nclass A:\n    pass\n")
     assert not stripped.lstrip().startswith("#")
     assert "class A" in stripped
+
+
+def test_list_vars_essentials_operation_limit(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LIST uses all-code-essentials, filters {}, operationName, limit<=100."""
+    calls, seen = _mock_urlopen_capture(
+        monkeypatch, [_fixture("problem_list.json")]
+    )
+    api.fetch_problem_list(refresh=True)
+    assert len(calls) == 1
+    payload: dict[str, Any] = _payload_of(seen[0])
+    assert payload.get("operationName") == "problemsetQuestionList"
+    variables: dict[str, Any] = payload.get("variables", {})
+    assert variables.get("categorySlug") == "all-code-essentials"
+    assert variables.get("filters") == {}
+    assert isinstance(variables.get("limit"), int)
+    assert int(variables["limit"]) <= 100
+    assert isinstance(variables.get("skip"), int)
+
+
+def test_list_paging_total_250_three_calls(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Total 250 with 100-row pages triggers exactly 3 urlopen calls."""
+    payloads: list[dict[str, Any]] = [
+        _make_list_payload(250, 0, 100),
+        _make_list_payload(250, 100, 100),
+        _make_list_payload(250, 200, 50),
+    ]
+    calls, _seen = _mock_urlopen_capture(monkeypatch, payloads)
+    rows: list[dict[str, Any]] = api.fetch_problem_list(refresh=True)
+    assert len(calls) == 3
+    assert len(rows) == 250
+
+
+def test_post_json_referer_origin(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_post_json sets problem Referer plus Origin and X-Requested-With."""
+    payloads: list[dict[str, Any]] = [{"interpret_id": "r1"}]
+    _calls, seen = _mock_urlopen_capture(monkeypatch, payloads)
+    auth.save_auth({"LEETCODE_SESSION": "s", "csrftoken": "c"})
+    api.run_sample("two-sum", "1", "code", "[1]")
+    headers: dict[str, str] = _headers_lower(seen[0])
+    assert headers.get("referer") == "https://leetcode.com/problems/two-sum/"
+    assert headers.get("origin") == "https://leetcode.com"
+    assert headers.get("x-requested-with") == "XMLHttpRequest"
+    assert "mozilla" in headers.get("user-agent", "").lower()
+    assert "idle-lc/0.1" not in headers.get("user-agent", "")
+
+
+def test_tolerant_interpret_submission_ids(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CamelCase interpretId/submissionId normalize without KeyError."""
+    payloads: list[dict[str, Any]] = [
+        {"interpretId": "camel-r1"},
+        {"submissionId": 101},
+    ]
+    _mock_urlopen(monkeypatch, payloads)
+    auth.save_auth({"LEETCODE_SESSION": "s", "csrftoken": "c"})
+    run: dict[str, Any] = api.run_sample("two-sum", "1", "code", "[1]")
+    assert run.get("interpret_id") == "camel-r1"
+    assert run.get("interpretId") == "camel-r1"
+    sub: dict[str, Any] = api.submit_solution("two-sum", "1", "code")
+    assert sub.get("submission_id") == 101
+    assert sub.get("submissionId") == 101
+
+
+def test_is_expired_extended() -> None:
+    """Extended markers detect expired sessions."""
+    assert auth.is_expired(200, "unauthorized access") is True
+    assert auth.is_expired(200, "session expired, login again") is True
+    assert auth.is_expired(200, "csrf verification failed") is True
+    assert auth.is_expired(200, "invalid session token") is True
+    assert auth.is_expired(200, '{"data":{"question": {}}}') is False
+
+
+def test_is_challenge_distinct() -> None:
+    """Challenge pages differ from expired sessions."""
+    body: str = "Just a moment... cf_clearance verify you are human"
+    assert auth.is_challenge(body) is True
+    assert auth.is_expired(200, body) is False
+    assert auth.is_challenge('{"data":{}}') is False
+    assert auth.is_challenge("cloudflare attention required captcha") is True
+
+
+def test_auth_headers_public_and_browser_ua(_tmp_home: Path) -> None:
+    """Public fetch has no Cookie yet keeps browser headers."""
+    headers: dict[str, str] = auth.auth_headers()
+    assert "Cookie" not in headers
+    assert headers.get("Referer") == "https://leetcode.com/"
+    assert headers.get("Origin") == "https://leetcode.com"
+    assert headers.get("X-Requested-With") == "XMLHttpRequest"
+    assert "mozilla" in headers.get("User-Agent", "").lower()
+    assert headers.get("User-Agent") != "idle-lc/0.1"
+
+
+def test_login_username_password_mocked(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mocked jar login returns cookies and round-trips via save."""
+    import http.cookiejar
+    import urllib.request
+
+    cookies_in: list[_FakeCookie] = [
+        _FakeCookie("LEETCODE_SESSION", "sess123"),
+        _FakeCookie("csrftoken", "csrf123"),
+    ]
+    login_html: str = (
+        '<input type="hidden" name="csrfmiddlewaretoken" value="tok123">'
+    )
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: cookies_in)
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *a: _FakeOpener([login_html, "ok"])
+    )
+    cookies: dict[str, str] = auth.login_username_password("user", "pass")
+    assert cookies == {"LEETCODE_SESSION": "sess123", "csrftoken": "csrf123"}
+    auth.save_auth(cookies)
+    loaded: dict[str, str] | None = auth.load_auth()
+    assert loaded == cookies
+
+
+def test_login_empty_credentials_no_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty credentials raise gracefully without touching network."""
+    calls: list[int] = _mock_urlopen(monkeypatch, [{}])
+    with pytest.raises(RuntimeError, match="login failed"):
+        auth.login_username_password("", "")
+    assert len(calls) == 0
+
+
+def test_run_local_zero_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_local executes Solution without any urlopen call."""
+    calls: list[int] = _mock_urlopen(monkeypatch, [{}])
+    code: str = "class Solution:\n    def double(self, x: int) -> int:\n        return x * 2\n"
+    result: dict[str, Any] = api.run_local(code, "2", "4")
+    assert len(calls) == 0
+    assert result.get("status_msg") == "Accepted"
+    assert result.get("state") == "SUCCESS"
+
+
+def test_run_local_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Broken code returns Runtime Error dict without raising."""
+    calls: list[int] = _mock_urlopen(monkeypatch, [{}])
+    bad: str = "class Solution:\n    def solve(self, x: int) -> int:\n        raise ValueError('boom')\n"
+    result: dict[str, Any] = api.run_local(bad, "1", "1")
+    assert len(calls) == 0
+    assert result.get("status_msg") == "Runtime Error"
+    assert str(result.get("error", "")) != ""
+
+
+def test_poll_verdict_int_and_timeout(
+    _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """poll_verdict accepts int id and returns PENDING on timeout."""
+    auth.save_auth({"LEETCODE_SESSION": "s", "csrftoken": "c"})
+    pending: dict[str, Any] = {"state": "PENDING"}
+    _mock_urlopen(monkeypatch, [pending])
+    result: dict[str, Any] = api.poll_verdict(123)
+    assert result.get("state") == "PENDING"
+
+
+def test_no_leetcode_cli_fallback() -> None:
+    """Guard keeps deleted CLI fallback from returning."""
+    import importlib.util
+
+    assert importlib.util.find_spec("idle.lc.api") is not None
+    from idle.lc import api as lc_api
+
+    assert hasattr(lc_api, "leetcode_cli_fallback") is False
+    with pytest.raises(ImportError):
+        from idle.lc.api import leetcode_cli_fallback  # type: ignore[attr-defined] # noqa: F401

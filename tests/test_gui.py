@@ -308,6 +308,38 @@ def test_menu_keyboard_nav() -> None:
     assert quit_flag is True
 
 
+def test_menu_difficulty_nav() -> None:
+    _ensure_pygame()
+    state = AppState()
+    assert state.typing_difficulty == 0
+    assert state.drill_difficulty == 0
+
+    # Right arrow on row 0 increments typing difficulty
+    screens_menu.handle_menu(_keydown(pygame.K_RIGHT), 0, state)
+    assert state.typing_difficulty == 1
+
+    # Left arrow wraps around to 4 (Master)
+    screens_menu.handle_menu(_keydown(pygame.K_LEFT), 0, state)
+    assert state.typing_difficulty == 0
+    screens_menu.handle_menu(_keydown(pygame.K_LEFT), 0, state)
+    assert state.typing_difficulty == 4
+
+    # Navigate to drill (row 1) and test drill difficulty
+    screens_menu.handle_menu(_keydown(pygame.K_RIGHT), 1, state)
+    assert state.drill_difficulty == 1
+
+    # Left/Right on row 2 does not change difficulties
+    screens_menu.handle_menu(_keydown(pygame.K_RIGHT), 2, state)
+    assert state.typing_difficulty == 4
+    assert state.drill_difficulty == 1
+
+    # Pressing 1 or 2 activates target screen
+    _, target1, _ = screens_menu.handle_menu(_keydown(pygame.K_1), 2, state)
+    assert target1 == Screen.TYPE
+    _, target2, _ = screens_menu.handle_menu(_keydown(pygame.K_2), 2, state)
+    assert target2 == Screen.DRILL
+
+
 def test_lc_list_refresh_mocked() -> None:
     _ensure_pygame()
     view: screens_lc.LcListState = screens_lc.LcListState()
@@ -738,3 +770,106 @@ def test_gui_initial_screen_navigation() -> None:
     gui_app._goto(rt_stats, Screen.STATS)
     assert rt_stats.state.screen == Screen.STATS
     assert rt_stats.stats_data is not None
+
+
+def test_stats_pagination_keys() -> None:
+    """Left/Right, A/D, and Tab page typing sessions by 10 entries."""
+    _ensure_pygame()
+    data: dict[str, Any] = {
+        "recent": [("1", "ts", "time", 60.0, 50.0, 0.95)] * 10,
+        "total": 25,
+        "offset": 0,
+        "db_path": "",
+    }
+    # Page forward with Right
+    screens_stats.handle_stats(_keydown(pygame.K_RIGHT), data)
+    assert data["offset"] == 10
+
+    # Page forward with 'd'
+    screens_stats.handle_stats(_keydown(pygame.K_d), data)
+    assert data["offset"] == 20
+
+    # Page backward with Left
+    screens_stats.handle_stats(_keydown(pygame.K_LEFT), data)
+    assert data["offset"] == 10
+
+    # Page backward with 'a'
+    screens_stats.handle_stats(_keydown(pygame.K_a), data)
+    assert data["offset"] == 0
+
+    # Underflow clamped at 0
+    screens_stats.handle_stats(_keydown(pygame.K_a), data)
+    assert data["offset"] == 0
+
+    # Page forward with Tab
+    screens_stats.handle_stats(_keydown(pygame.K_TAB), data)
+    assert data["offset"] == 10
+
+
+def test_gui_typing_discard_on_esc_and_ctrl_c(tmp_path: Path) -> None:
+    """Esc and Ctrl+C discard typing session without adding to DB history."""
+    _ensure_pygame()
+    db_file: Path = tmp_path / "test.db"
+    conn = get_db(db_file)
+    conn.close()
+
+    rt: gui_app._Runtime = gui_app._new_runtime()
+    rt.state.db_path = str(db_file)
+    gui_app._goto(rt, Screen.TYPE)
+    assert rt.typing is not None
+
+    # Type a char
+    gui_app._handle_session(_textinput("h"), rt)
+    assert len(rt.typing.typed) == 1
+
+    # Press ESC: should discard and return to menu
+    esc_event = _keydown(pygame.K_ESCAPE)
+    gui_app._handle_session(esc_event, rt)
+    assert rt.state.screen == Screen.MENU
+    assert rt.typing is None
+
+    # Check DB: no sessions saved
+    check_conn = get_db(db_file)
+    try:
+        count = check_conn.execute("SELECT COUNT(*) FROM typing_sessions;").fetchone()
+        assert int(count[0]) == 0
+    finally:
+        check_conn.close()
+
+    # Enter typing again and complete it
+    gui_app._goto(rt, Screen.TYPE)
+    assert rt.typing is not None
+    # Simulate finished and saved
+    rt.typing.finished = True
+    rt.typing.total = 10
+    rt.typing.correct = 10
+    rt.typing.text = "hello"
+    rt.typing.typed = ["h", "e", "l", "l", "o"]
+    save_conn = get_db(db_file)
+    try:
+        sid = screens_typing.save_and_refresh(rt.typing, save_conn)
+        assert sid is not None
+        assert rt.typing.session_id == sid
+    finally:
+        save_conn.close()
+
+    # Verify session is currently in DB
+    check_conn = get_db(db_file)
+    try:
+        count = check_conn.execute("SELECT COUNT(*) FROM typing_sessions;").fetchone()
+        assert int(count[0]) == 1
+    finally:
+        check_conn.close()
+
+    # Pressing ESC on finished session discards it from DB
+    gui_app._handle_session(esc_event, rt)
+    assert rt.state.screen == Screen.MENU
+    assert rt.typing is None
+
+    # Verify session was deleted from DB
+    check_conn = get_db(db_file)
+    try:
+        count = check_conn.execute("SELECT COUNT(*) FROM typing_sessions;").fetchone()
+        assert int(count[0]) == 0
+    finally:
+        check_conn.close()
