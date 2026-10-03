@@ -6,6 +6,8 @@ from typing import Any
 TIMEOUT = 10
 GRAPHQL_URL = "https://leetcode.com/graphql"
 CACHE_TTL_DAYS = 7
+LIST_CATEGORY: str = "all-code-essentials"
+LIST_PAGE_SIZE: int = 100
 _MAX_RETRIES = 2
 _BACKOFF_S = (1.0, 2.0)
 
@@ -44,27 +46,7 @@ query questionData($titleSlug: String!) {
 }
 """
 
-DAILY_QUERY = """
-query daily() {
-  activeDailyCodingChallengeQuestion {
-    date
-    link
-    question {
-      questionId
-      questionFrontendId
-      title
-      titleSlug
-      content
-      difficulty
-      acRate
-      sampleTestCase
-      exampleTestcases
-      codeSnippets { lang langSlug code }
-      topicTags { name slug }
-    }
-  }
-}
-"""
+DAILY_SLUG_QUERY: str = "query questionOfToday { activeDailyCodingChallengeQuestion { date link question { titleSlug } } }"
 
 
 class AuthExpiredError(RuntimeError):
@@ -73,12 +55,18 @@ class AuthExpiredError(RuntimeError):
 
 def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build request headers with auth cookies."""
+    from idle.lc.auth import BROWSER_UA
     from idle.lc.auth import auth_headers
 
     base: dict[str, str] = auth_headers()
-    base["Content-Type"] = "application/json"
+    base.setdefault("Referer", "https://leetcode.com/")
+    base.setdefault("Origin", "https://leetcode.com")
+    base.setdefault("X-Requested-With", "XMLHttpRequest")
+    if not base.get("User-Agent") or base["User-Agent"] == "idle-lc/0.1":
+        base["User-Agent"] = BROWSER_UA
     if extra:
         base.update(extra)
+    base["Content-Type"] = "application/json"
     return base
 
 
@@ -94,29 +82,45 @@ def _graphql_once(payload: bytes, headers: dict[str, str]) -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
+def _operation_name(query: str) -> str:
+    """Extract operation name from query text."""
+    import re
+
+    match = re.search(r"query\s+(\w+)", query)
+    return match.group(1) if match else ""
+
+
 def graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     """POST GraphQL with timeout and retry on network errors."""
     import time
     import urllib.error
 
+    from idle.lc.auth import is_challenge
     from idle.lc.auth import is_expired
 
-    payload: bytes = json.dumps(
-        {"query": query, "variables": variables}
-    ).encode("utf-8")
+    body: dict[str, Any] = {"query": query, "variables": variables}
+    op_name: str = _operation_name(query)
+    if op_name:
+        body["operationName"] = op_name
+    payload: bytes = json.dumps(body).encode("utf-8")
     last_err: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
             return _graphql_once(payload, _headers())
         except urllib.error.HTTPError as exc:
-            body: str = ""
+            err_body: str = ""
             try:
-                body = exc.read().decode("utf-8", "replace")
+                err_body = exc.read().decode("utf-8", "replace")
             except Exception:
-                body = ""
-            if is_expired(exc.code, body):
+                err_body = ""
+            if is_expired(exc.code, err_body):
                 raise AuthExpiredError(
                     "Session expired. Run: idle lc login"
+                ) from exc
+            if is_challenge(err_body):
+                raise RuntimeError(
+                    "LeetCode challenge detected"
+                    " (captcha/cloudflare). Retry later."
                 ) from exc
             last_err = exc
             if attempt >= _MAX_RETRIES:
@@ -256,6 +260,46 @@ def _save_problems(conn: Any, problems: list[dict[str, Any]]) -> None:
     conn.commit()
 
 
+def _list_total(payload: dict[str, Any]) -> int:
+    """Return total count from list payload."""
+    data: Any = payload.get("data", {})
+    if not isinstance(data, dict):
+        return 0
+    node: Any = data.get("problemsetQuestionList") or data.get("questionList")
+    if not isinstance(node, dict):
+        return 0
+    try:
+        return int(node.get("total") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fetch_all_pages() -> list[dict[str, Any]]:
+    """Fetch all list pages with skip paging."""
+    problems: list[dict[str, Any]] = []
+    skip: int = 0
+    while True:
+        variables: dict[str, Any] = {
+            "categorySlug": LIST_CATEGORY,
+            "limit": LIST_PAGE_SIZE,
+            "skip": skip,
+            "filters": {},
+        }
+        payload = graphql(LIST_QUERY, variables)
+        page = _parse_problem_list(payload)
+        if not page:
+            break
+        problems.extend(page)
+        skip += len(page)
+        total: int = _list_total(payload)
+        if total:
+            if skip >= total:
+                break
+        elif len(page) < LIST_PAGE_SIZE:
+            break
+    return problems
+
+
 def fetch_problem_list(refresh: bool = False) -> list[dict[str, Any]]:
     """Fetch list, using weekly SQLite cache unless refresh."""
     from idle.config import resolve_paths
@@ -268,8 +312,7 @@ def fetch_problem_list(refresh: bool = False) -> list[dict[str, Any]]:
             cached = _load_cached_problems(conn)
             if cached is not None:
                 return cached
-        payload = graphql(LIST_QUERY, {"categorySlug": "", "skip": 0, "limit": 3000})
-        problems = _parse_problem_list(payload)
+        problems = _fetch_all_pages()
         _save_problems(conn, problems)
         return problems
     finally:
@@ -322,19 +365,30 @@ def fetch_question(slug: str) -> dict[str, Any]:
 
 
 def fetch_daily() -> dict[str, Any]:
-    """Fetch daily challenge question detail."""
-    payload = graphql(DAILY_QUERY, {})
+    """Fetch daily slug then full detail."""
+    import re
+
+    payload = graphql(DAILY_SLUG_QUERY, {})
     data: Any = payload.get("data", {})
     wrap: Any = (
         data.get("activeDailyCodingChallengeQuestion")
         if isinstance(data, dict)
         else None
     )
-    node: Any = wrap.get("question") if isinstance(wrap, dict) else None
-    if not isinstance(node, dict):
+    if not isinstance(wrap, dict):
         raise RuntimeError("daily challenge not found")
-    detail = _normalize_question(node)
-    link: str = str(wrap.get("link", "")) if isinstance(wrap, dict) else ""
+    link: str = str(wrap.get("link") or "")
+    slug: str = ""
+    node: Any = wrap.get("question")
+    if isinstance(node, dict):
+        slug = str(node.get("titleSlug") or "")
+    if not slug and link:
+        match = re.search(r"/problems/([^/]+)/", link)
+        if match:
+            slug = match.group(1)
+    if not slug:
+        raise RuntimeError("daily challenge not found")
+    detail: dict[str, Any] = fetch_question(slug)
     if link:
         detail["link"] = link
     return detail
@@ -342,13 +396,21 @@ def fetch_daily() -> dict[str, Any]:
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     """POST JSON with auth headers and expiry check."""
+    import re
     import urllib.error
     import urllib.request
 
+    from idle.lc.auth import is_challenge
     from idle.lc.auth import is_expired
 
     data: bytes = json.dumps(payload).encode("utf-8")
-    headers = _headers({"Referer": url.rsplit("/problems/", 1)[0] + "/"})
+    match = re.search(r"/problems/([^/]+)/", url)
+    referer: str = (
+        f"https://leetcode.com/problems/{match.group(1)}/"
+        if match
+        else "https://leetcode.com/"
+    )
+    headers = _headers({"Referer": referer})
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
@@ -361,18 +423,33 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             body = ""
         if is_expired(exc.code, body):
             raise AuthExpiredError("Session expired. Run: idle lc login") from exc
+        if is_challenge(body):
+            raise RuntimeError(
+                "LeetCode challenge detected"
+                " (captcha/cloudflare). Retry later."
+            ) from exc
         raise RuntimeError(f"request failed: {exc.code}") from exc
     return json.loads(raw.decode("utf-8"))
 
 
 def _get_json(url: str) -> dict[str, Any]:
     """GET JSON with auth headers and expiry check."""
+    import re
     import urllib.error
     import urllib.request
 
+    from idle.lc.auth import is_challenge
     from idle.lc.auth import is_expired
 
-    req = urllib.request.Request(url, headers=_headers(), method="GET")
+    match = re.search(r"/problems/([^/]+)/", url)
+    referer: str = (
+        f"https://leetcode.com/problems/{match.group(1)}/"
+        if match
+        else "https://leetcode.com/"
+    )
+    req = urllib.request.Request(
+        url, headers=_headers({"Referer": referer}), method="GET"
+    )
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             raw: bytes = resp.read()
@@ -384,6 +461,11 @@ def _get_json(url: str) -> dict[str, Any]:
             body = ""
         if is_expired(exc.code, body):
             raise AuthExpiredError("Session expired. Run: idle lc login") from exc
+        if is_challenge(body):
+            raise RuntimeError(
+                "LeetCode challenge detected"
+                " (captcha/cloudflare). Retry later."
+            ) from exc
         raise RuntimeError(f"request failed: {exc.code}") from exc
     return json.loads(raw.decode("utf-8"))
 
@@ -397,13 +479,21 @@ def run_sample(
 ) -> dict[str, Any]:
     """Run sample cases remotely via interpret_solution."""
     url: str = f"https://leetcode.com/problems/{slug}/interpret_solution/"
+    normalized_input: str = data_input
+    if normalized_input and not normalized_input.endswith("\n"):
+        normalized_input += "\n"
     payload: dict[str, Any] = {
         "lang": lang,
         "question_id": question_id,
         "typed_code": code,
-        "data_input": data_input,
+        "data_input": normalized_input,
     }
-    return _post_json(url, payload)
+    result: dict[str, Any] = _post_json(url, payload)
+    if "interpret_id" not in result and "interpretId" in result:
+        result["interpret_id"] = result["interpretId"]
+    if "interpretId" not in result and "interpret_id" in result:
+        result["interpretId"] = result["interpret_id"]
+    return result
 
 
 def submit_solution(
@@ -416,7 +506,12 @@ def submit_solution(
         "question_id": question_id,
         "typed_code": code,
     }
-    return _post_json(url, payload)
+    result: dict[str, Any] = _post_json(url, payload)
+    if "submission_id" not in result and "submissionId" in result:
+        result["submission_id"] = result["submissionId"]
+    if "submissionId" not in result and "submission_id" in result:
+        result["submissionId"] = result["submission_id"]
+    return result
 
 
 def poll_verdict(submission_id: str | int) -> dict[str, Any]:
@@ -433,3 +528,150 @@ def poll_verdict(submission_id: str | int) -> dict[str, Any]:
         time.sleep(1.0)
         waited += 1.0
     return last
+
+
+def _parse_local_args(data_input: str) -> list[Any]:
+    """Parse lines as literals. Test: "[1]" gives [[1]]."""
+    import ast
+    import re
+
+    args: list[Any] = []
+    parts: list[str] = re.split(r"\r?\n", data_input)
+    for line in parts:
+        text: str = line.strip()
+        if not text:
+            continue
+        low: str = text.lower()
+        if low == "true":
+            args.append(True)
+            continue
+        if low == "false":
+            args.append(False)
+            continue
+        if low in ("null", "none"):
+            args.append(None)
+            continue
+        try:
+            args.append(ast.literal_eval(text))
+        except Exception:
+            args.append(text)
+    return args
+
+
+def _get_local_callable(clean: str) -> tuple[Any | None, str | None]:
+    """Exec clean and return method. Test: valid class returns callable."""
+    import traceback
+
+    ns: dict[str, Any] = {}
+    try:
+        exec(clean, ns)
+    except Exception:
+        return None, traceback.format_exc()
+    cls: Any = ns.get("Solution")
+    if cls is None:
+        return None, "Solution class not found"
+    try:
+        inst: Any = cls()
+    except Exception:
+        return None, traceback.format_exc()
+    for name in vars(cls):
+        if name.startswith("_"):
+            continue
+        try:
+            meth: Any = getattr(inst, name)
+        except Exception:
+            continue
+        if callable(meth):
+            return meth, None
+    return None, "no public method in Solution"
+
+
+def _format_local_value(value: Any) -> str:
+    """Format value for panel display."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "None"
+    return str(value)
+
+
+def _local_matches(actual: Any, expected: str) -> bool:
+    """Compare actual to expected. Test: 4 matches "4"."""
+    import ast
+
+    want: str = expected.strip()
+    if not want:
+        return True
+    try:
+        parsed: Any = ast.literal_eval(want)
+        return bool(actual == parsed)
+    except Exception:
+        pass
+    low: str = want.lower()
+    if low == "true":
+        return actual is True
+    if low == "false":
+        return actual is False
+    if low in ("null", "none"):
+        return actual is None
+    if isinstance(actual, str):
+        return actual.strip() == want
+    return str(actual).strip() == want
+
+
+def _local_error_result(want: str, err: str) -> dict[str, Any]:
+    """Build Runtime Error dict for local run."""
+    return {
+        "state": "SUCCESS",
+        "status_msg": "Runtime Error",
+        "code_output": "",
+        "expected_output": want,
+        "error": err,
+    }
+
+
+def _local_done_result(actual: Any, want: str) -> dict[str, Any]:
+    """Build Accepted or Wrong Answer dict."""
+    got: str = _format_local_value(actual)
+    exp_out: str = want if want else got
+    if want and not _local_matches(actual, want):
+        return {
+            "state": "SUCCESS",
+            "status_msg": "Wrong Answer",
+            "code_output": got,
+            "expected_output": exp_out,
+            "error": "",
+        }
+    return {
+        "state": "SUCCESS",
+        "status_msg": "Accepted",
+        "code_output": got,
+        "expected_output": exp_out,
+        "error": "",
+    }
+
+
+def run_local(
+    code: str, data_input: str, expected: str | None = None
+) -> dict[str, Any]:
+    """Run Solution locally without network.
+
+    Test: solve x*2 with input 2 gives Accepted.
+    """
+    import traceback
+
+    from idle.lc.scaffold import strip_header
+
+    clean: str = strip_header(code)
+    want: str = expected.strip() if isinstance(expected, str) else ""
+    args: list[Any] = _parse_local_args(data_input)
+    target: Any | None = None
+    load_err: str | None = None
+    target, load_err = _get_local_callable(clean)
+    if target is None or load_err is not None:
+        return _local_error_result(want, load_err or "no Solution")
+    try:
+        actual: Any = target(*args)
+    except Exception:
+        return _local_error_result(want, traceback.format_exc())
+    return _local_done_result(actual, want)

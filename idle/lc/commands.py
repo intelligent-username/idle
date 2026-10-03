@@ -175,24 +175,57 @@ def _show_detail(detail: dict[str, Any]) -> None:
     pydoc.pager(text)
 
 
+def _login_direct(username: str) -> None:
+    """Login with username password and save cookies."""
+    import getpass
+
+    from idle.lc.auth import login_username_password
+    from idle.lc.auth import save_auth
+
+    try:
+        password: str = getpass.getpass("password: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nexited cleanly")
+        return
+    try:
+        cookies: dict[str, str] = login_username_password(username, password)
+    except (OSError, RuntimeError) as exc:
+        print(str(exc))
+        return
+    save_auth(cookies)
+    print("saved login")
+
+
 def cmd_login() -> None:
-    """Prompt for cookies and save with 0600 perms."""
+    """Prompt for cookies or username password and save."""
     from idle.lc.auth import save_auth
 
     try:
         session: str = input("LEETCODE_SESSION: ").strip()
-        csrf: str = input("csrftoken: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nexited cleanly")
         return
-    if not session:
+    if session:
+        try:
+            csrf: str = input("csrftoken: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nexited cleanly")
+            return
+        cookies: dict[str, str] = {"LEETCODE_SESSION": session}
+        if csrf:
+            cookies["csrftoken"] = csrf
+        save_auth(cookies)
+        print("saved login")
+        return
+    try:
+        username: str = input("username: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nexited cleanly")
+        return
+    if not username:
         print("login cancelled: empty session")
         return
-    cookies: dict[str, str] = {"LEETCODE_SESSION": session}
-    if csrf:
-        cookies["csrftoken"] = csrf
-    save_auth(cookies)
-    print("saved login")
+    _login_direct(username)
 
 
 def cmd_list(
@@ -489,7 +522,7 @@ def _problem_num(detail: dict[str, Any]) -> int | None:
 
 
 def cmd_test(id_or_slug: str | None = None) -> None:
-    """Run remote interpret_solution and show verdict.
+    """Run remote sample then local fallback and show verdict.
 
     Test: mocked run returns verdict dict for display.
     """
@@ -510,8 +543,11 @@ def cmd_test(id_or_slug: str | None = None) -> None:
         print(RELOGIN_MSG)
         return
     except (OSError, RuntimeError):
-        _print_offline("run test")
-        return
+        try:
+            result = lc_api.run_local(code, data_in)
+        except (OSError, RuntimeError):
+            _print_offline("run test")
+            return
     _display_result(result)
     num: int | None = _problem_num(detail)
     if num is not None:
@@ -530,6 +566,18 @@ def _do_remote_submit(
     try:
         resp: dict[str, Any] = lc_api.submit_solution(slug, qid, code, _lc_lang())
         sid: Any = resp.get("submission_id") or resp.get("submissionId")
+        if sid is None:
+            alt: Any = resp.get("submission")
+            if isinstance(alt, dict):
+                sid = (
+                    alt.get("id")
+                    or alt.get("submission_id")
+                    or alt.get("submissionId")
+                )
+            elif alt is not None:
+                sid = alt
+        if sid is None:
+            sid = resp.get("id")
         if sid is None:
             print("submit failed: no submission id")
             return None

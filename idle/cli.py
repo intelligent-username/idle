@@ -120,10 +120,11 @@ def _open_editor(config_path: object, config: object) -> None:
 
 
 def _recent_rows(conn: Any, limit: int) -> list[Any]:
-    """Fetch last N typing sessions newest first."""
+    """Fetch last N typing sessions newest first, excluding drills."""
     cur = conn.execute(
         "SELECT id, ts, mode, duration_s, net_wpm, accuracy"
-        " FROM typing_sessions ORDER BY id DESC LIMIT ?;",
+        " FROM typing_sessions WHERE mode != 'drill'"
+        " ORDER BY id DESC LIMIT ?;",
         (max(limit, 0),),
     )
     return list(cur.fetchall())
@@ -320,7 +321,7 @@ def _cmd_type(args: argparse.Namespace) -> None:
         return
     opts: dict[str, Any] = {"mode": mode, "time": duration, "duration_s": duration, "stop_on_error": stop}
     result: dict[str, Any] | None = _run_curses_text(text, opts)
-    if result is None:
+    if result is None or result.get("quit"):
         return
     _save_type_result(mode, text, result)
 
@@ -386,7 +387,7 @@ def _cmd_drill() -> None:
             print("could not build drill text")
             return
         result: dict[str, Any] | None = _run_curses_text(text, {"mode": "drill", "stop_on_error": stop})
-        if result is None:
+        if result is None or result.get("quit"):
             return
         _persist_type_result(conn, "drill", text, result)
         after: float | None = _weak_avg(conn)

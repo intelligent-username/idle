@@ -35,6 +35,8 @@ class AppState:
     filter: str = ""
     limit: int = 50
     message: str = ""
+    typing_difficulty: int = 0
+    drill_difficulty: int = 0
 
     def push(self, screen: Screen) -> None:
         """Push current screen and switch to given one."""

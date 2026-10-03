@@ -5,11 +5,13 @@ from typing import Any
 
 __all__: list[str] = [
     "get_recent_sessions",
+    "get_total_sessions",
     "get_best_avg",
     "get_solved_by_difficulty",
     "get_recent_attempts",
     "get_streak",
     "load_stats",
+    "refresh_recent",
     "load_config_view",
     "format_config_lines",
     "handle_stats",
@@ -22,14 +24,24 @@ EMPTY_TYPING_MSG: str = "no sessions yet. Run: type"
 EMPTY_LC_MSG: str = "no leetcode activity yet"
 
 
-def get_recent_sessions(conn: Any, limit: int = 20) -> list[Any]:
-    """Fetch last N typing sessions newest first."""
+def get_recent_sessions(conn: Any, limit: int = 10, offset: int = 0) -> list[Any]:
+    """Fetch N typing sessions newest first with offset, excluding drills."""
     cur: Any = conn.execute(
         "SELECT id, ts, mode, duration_s, net_wpm, accuracy"
-        " FROM typing_sessions ORDER BY id DESC LIMIT ?;",
-        (max(limit, 0),),
+        " FROM typing_sessions WHERE mode != 'drill'"
+        " ORDER BY id DESC LIMIT ? OFFSET ?;",
+        (max(limit, 0), max(offset, 0)),
     )
     return list(cur.fetchall())
+
+
+def get_total_sessions(conn: Any) -> int:
+    """Return total count of recorded typing sessions, excluding drills."""
+    cur: Any = conn.execute(
+        "SELECT COUNT(*) FROM typing_sessions WHERE mode != 'drill';"
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_best_avg(conn: Any) -> tuple[float | None, float | None]:
@@ -75,7 +87,9 @@ def get_streak(conn: Any) -> tuple[int, int]:
     return (_calc_streak(days), len(set(days)))
 
 
-def load_stats(db_path: str | Path, limit: int = 20) -> dict[str, Any]:
+def load_stats(
+    db_path: str | Path, limit: int = 10, offset: int = 0
+) -> dict[str, Any]:
     """Load all stats sections, empty friendly on error."""
     from idle.db import get_db
 
@@ -87,13 +101,17 @@ def load_stats(db_path: str | Path, limit: int = 20) -> dict[str, Any]:
         "attempts": [],
         "streak": 0,
         "active": 0,
+        "offset": offset,
+        "total": 0,
+        "db_path": str(db_path),
     }
     try:
         conn = get_db(Path(db_path))
     except OSError:
         return empty
     try:
-        empty["recent"] = get_recent_sessions(conn, limit)
+        empty["total"] = get_total_sessions(conn)
+        empty["recent"] = get_recent_sessions(conn, limit, offset)
         best, avg = get_best_avg(conn)
         empty["best"] = best
         empty["avg"] = avg
@@ -103,6 +121,21 @@ def load_stats(db_path: str | Path, limit: int = 20) -> dict[str, Any]:
         empty["streak"] = streak
         empty["active"] = active
         return empty
+    finally:
+        conn.close()
+
+
+def refresh_recent(data: dict[str, Any], db_path: str | Path) -> None:
+    """Refresh recent typing session slice using data['offset']."""
+    from idle.db import get_db
+
+    try:
+        conn = get_db(Path(db_path))
+    except OSError:
+        return
+    try:
+        data["total"] = get_total_sessions(conn)
+        data["recent"] = get_recent_sessions(conn, 10, int(data.get("offset", 0)))
     finally:
         conn.close()
 
@@ -158,9 +191,43 @@ def _is_back(event: Any) -> bool:
     ) == pygame.K_ESCAPE
 
 
-def handle_stats(event: Any) -> bool:
-    """Return True when stats screen should go back."""
-    return _is_back(event)
+def handle_stats(
+    event: Any,
+    data: dict[str, Any] | None = None,
+    db_path: str | Path = "",
+) -> bool:
+    """Return True when stats screen should go back; handle Left/Right/A/D/Tab paging."""
+    import pygame
+
+    if int(getattr(event, "type", -1)) != pygame.KEYDOWN:
+        return False
+    key: int = int(getattr(event, "key", 0))
+    mod: int = int(getattr(event, "mod", 0))
+    if key == pygame.K_ESCAPE:
+        return True
+
+    if data is not None:
+        path = str(db_path or data.get("db_path", ""))
+        offset = int(data.get("offset", 0))
+        total = int(data.get("total", 0))
+
+        # Backward 10 entries: Left arrow, 'a', or Shift+Tab
+        if key in (pygame.K_LEFT, pygame.K_a) or (key == pygame.K_TAB and bool(mod & pygame.KMOD_SHIFT)):
+            if offset > 0:
+                data["offset"] = max(0, offset - 10)
+                if path:
+                    refresh_recent(data, path)
+            return False
+
+        # Forward 10 entries: Right arrow, 'd', or Tab (without Shift)
+        if key in (pygame.K_RIGHT, pygame.K_d, pygame.K_TAB):
+            if total == 0 or offset + 10 < total:
+                data["offset"] = offset + 10
+                if path:
+                    refresh_recent(data, path)
+            return False
+
+    return False
 
 
 def handle_config(event: Any) -> bool:
@@ -174,12 +241,20 @@ def _stat_lines(data: dict[str, Any]) -> list[str]:
     best: Any = data.get("best")
     avg: Any = data.get("avg")
     lines.append(f"Best: {best:.1f} WPM" if best is not None else "Best: --")
-    lines.append(f"7-day: {avg:.1f} WPM" if avg is not None else "7-day: --")
+    lines.append(f"7-Day Avg: {avg:.1f} WPM" if avg is not None else "7-Day Avg: --")
     lines.append("")
     recent: Any = data.get("recent", [])
-    if not recent:
+    total: int = int(data.get("total", len(recent)))
+    offset: int = int(data.get("offset", 0))
+    if not recent and total == 0:
         lines.append(EMPTY_TYPING_MSG)
     else:
+        page_suffix = ""
+        if total > 0:
+            start_num = offset + 1
+            end_num = min(offset + len(recent), total)
+            page_suffix = f" ({start_num}-{end_num} of {total}) [Left/Right or A/D]"
+        lines.append(f"recent typing tests{page_suffix}:")
         lines.append(f"{'id':>5}  {'mode':<6}  {'net':>6}  {'acc':>6}")
         for row in recent[:10]:
             lines.append(_format_session(row))
@@ -230,8 +305,7 @@ def draw_stats(surface: Any, state: Any, data: dict[str, Any] | None = None) -> 
     """Draw stats screen, loading from state when needed."""
     if data is None:
         db_path: str = str(getattr(state, "db_path", "") or "")
-        limit: int = int(getattr(state, "limit", 20) or 20)
-        data = load_stats(db_path, limit) if db_path else load_stats(".", limit)
+        data = load_stats(db_path, limit=10, offset=0) if db_path else load_stats(".", limit=10, offset=0)
     _draw_lines(surface, _stat_lines(data))
 
 

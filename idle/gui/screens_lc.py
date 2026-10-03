@@ -28,6 +28,7 @@ __all__: list[str] = [
     "open_problem",
     "auth_needed",
     "try_save_login",
+    "try_login_password",
     "draw_lc_list",
     "draw_lc_detail",
     "draw_lc_solve",
@@ -155,6 +156,16 @@ def _offline_text(action: str) -> str:
     return f"could not {action} (offline?). Check network and retry."
 
 
+def _network_message(exc: Exception, action: str) -> str:
+    """Return challenge text when detected else offline text."""
+    from idle.lc.auth import is_challenge
+
+    msg: str = str(exc).strip()
+    if msg and is_challenge(msg):
+        return msg
+    return _offline_text(action)
+
+
 def verdict_summary(result: dict[str, Any]) -> str:
     """Return single line verdict string."""
     from idle.lc.commands import _verdict_str
@@ -253,8 +264,8 @@ def load_problem_list(refresh: bool = False) -> tuple[list[dict[str, Any]], str,
         )
     except AuthExpiredError:
         return [], RELOGIN_MSG, True
-    except (OSError, RuntimeError):
-        return [], _offline_text("fetch problem list"), False
+    except (OSError, RuntimeError) as exc:
+        return [], _network_message(exc, "fetch problem list"), False
     return problems, "", False
 
 
@@ -325,8 +336,8 @@ def load_detail(id_or_slug: str) -> tuple[dict[str, Any] | None, str, str, bool]
         problems: list[dict[str, Any]] = lc_api.fetch_problem_list(refresh=False)
     except AuthExpiredError:
         return None, "", RELOGIN_MSG, True
-    except (OSError, RuntimeError):
-        return None, "", _offline_text("fetch problem list"), False
+    except (OSError, RuntimeError) as exc:
+        return None, "", _network_message(exc, "fetch problem list"), False
     found: dict[str, Any] | None = _resolve_key(problems, id_or_slug)
     if found is None:
         return None, "", f"problem not found: {id_or_slug}", False
@@ -335,8 +346,8 @@ def load_detail(id_or_slug: str) -> tuple[dict[str, Any] | None, str, str, bool]
         detail: dict[str, Any] = lc_api.fetch_question(slug)
     except AuthExpiredError:
         return None, "", RELOGIN_MSG, True
-    except (OSError, RuntimeError):
-        return None, "", _offline_text("fetch problem detail"), False
+    except (OSError, RuntimeError) as exc:
+        return None, "", _network_message(exc, "fetch problem detail"), False
     return detail, _detail_text(detail), "", False
 
 
@@ -352,8 +363,8 @@ def load_daily() -> tuple[dict[str, Any] | None, str, str, bool]:
         detail: dict[str, Any] = lc_api.fetch_daily()
     except AuthExpiredError:
         return None, "", RELOGIN_MSG, True
-    except (OSError, RuntimeError):
-        return None, "", _offline_text("fetch daily challenge"), False
+    except (OSError, RuntimeError) as exc:
+        return None, "", _network_message(exc, "fetch daily challenge"), False
     return detail, _detail_text(detail), "", False
 
 
@@ -381,10 +392,51 @@ def _problem_num(detail: dict[str, Any]) -> int | None:
         return None
 
 
+def _local_test_fallback(
+    clean: str, text_in: str, detail: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str, bool]:
+    """Run local fallback and format panel."""
+    from idle.lc import api as lc_api
+    from idle.lc.commands import _record_attempt
+
+    try:
+        local: dict[str, Any] = lc_api.run_local(clean, text_in)
+    except (OSError, RuntimeError) as exc:
+        return None, _network_message(exc, "run test"), False
+    num: int | None = _problem_num(detail)
+    if num is not None:
+        _record_attempt(num, "test", verdict_summary(local), local)
+    return local, format_verdict_panel(local), False
+
+
+def _extract_sid(resp: dict[str, Any]) -> Any:
+    """Return submission id tolerating varied keys."""
+    sid: Any = resp.get("submission_id") or resp.get("submissionId")
+    if sid is not None:
+        return sid
+    sid = resp.get("submission") or resp.get("id")
+    if isinstance(sid, dict):
+        return sid.get("submission_id") or sid.get("submissionId") or sid.get("id")
+    return sid
+
+
+def _record_submit(detail: dict[str, Any], verdict: dict[str, Any]) -> bool:
+    """Record submit attempt and mark solved."""
+    from idle.lc.commands import _mark_solved, _record_attempt
+
+    num: int | None = _problem_num(detail)
+    solved: bool = "accept" in verdict_summary(verdict).lower()
+    if num is not None:
+        _record_attempt(num, "submit", verdict_summary(verdict), verdict)
+        if solved:
+            _mark_solved(num)
+    return solved
+
+
 def run_test_action(
     detail: dict[str, Any], code: str, data_input: str
 ) -> tuple[dict[str, Any] | None, str, bool]:
-    """Run sample tests remotely, record attempt, no token logs.
+    """Run remote test then local fallback.
 
     Test: mocked run_sample returns verdict dict with panel.
     """
@@ -404,7 +456,7 @@ def run_test_action(
     except AuthExpiredError:
         return None, RELOGIN_MSG, True
     except (OSError, RuntimeError):
-        return None, _offline_text("run test"), False
+        return _local_test_fallback(clean, text_in, detail)
     num: int | None = _problem_num(detail)
     if num is not None:
         _record_attempt(num, "test", verdict_summary(result), result)
@@ -420,7 +472,6 @@ def run_submit_action(
     """
     from idle.lc import api as lc_api
     from idle.lc.api import AuthExpiredError
-    from idle.lc.commands import _mark_solved, _record_attempt
 
     slug: str = str(detail.get("slug", ""))
     clean: str = strip_header(code)
@@ -430,23 +481,18 @@ def run_submit_action(
         )
     except AuthExpiredError:
         return None, RELOGIN_MSG, True, False
-    except (OSError, RuntimeError):
-        return None, _offline_text("submit solution"), False, False
-    sid: Any = resp.get("submission_id") or resp.get("submissionId")
+    except (OSError, RuntimeError) as exc:
+        return None, _network_message(exc, "submit solution"), False, False
+    sid: Any = _extract_sid(resp)
     if sid is None:
         return None, "submit failed: no submission id", False, False
     try:
         verdict: dict[str, Any] = lc_api.poll_verdict(sid)
     except AuthExpiredError:
         return None, RELOGIN_MSG, True, False
-    except (OSError, RuntimeError):
-        return None, _offline_text("poll verdict"), False, False
-    num: int | None = _problem_num(detail)
-    solved: bool = "accept" in verdict_summary(verdict).lower()
-    if num is not None:
-        _record_attempt(num, "submit", verdict_summary(verdict), verdict)
-        if solved:
-            _mark_solved(num)
+    except (OSError, RuntimeError) as exc:
+        return None, _network_message(exc, "poll verdict"), False, False
+    solved: bool = _record_submit(detail, verdict)
     return verdict, format_verdict_panel(verdict), False, solved
 
 
@@ -481,6 +527,24 @@ def try_save_login(session: str, csrf: str) -> tuple[bool, str]:
     cookies: dict[str, str] = {"LEETCODE_SESSION": session.strip()}
     if csrf.strip():
         cookies["csrftoken"] = csrf.strip()
+    save_auth(cookies)
+    return True, LOGIN_SAVED_MSG
+
+
+def try_login_password(username: str, password: str) -> tuple[bool, str]:
+    """Login with password direct, no browser.
+
+    Test: empty creds give False without network.
+    """
+    from idle.lc.auth import login_username_password, save_auth
+
+    if not username.strip() or not password.strip():
+        return False, "login failed: bad credentials or captcha"
+    try:
+        cookies: dict[str, str] = login_username_password(username, password)
+    except (OSError, RuntimeError) as exc:
+        msg: str = str(exc).strip()
+        return False, msg if msg else _offline_text("login")
     save_auth(cookies)
     return True, LOGIN_SAVED_MSG
 
