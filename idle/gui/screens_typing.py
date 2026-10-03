@@ -25,6 +25,9 @@ __all__: list[str] = [
     "TypingSession",
     "new_session",
     "build_typing_text",
+    "build_difficulty_typing_text",
+    "load_tiered_passages",
+    "rate_passage",
     "build_drill_text",
     "new_typing_session",
     "new_drill_session",
@@ -59,10 +62,14 @@ class TypingSession:
     last_ts: float | None = None
     spark: list[float] = field(default_factory=list)
     spark_sec: int = -1
+    chars_prev_sec: int = 0
+    paused_duration: float = 0.0
     finished: bool = False
     result: dict[str, Any] | None = None
     best: float | None = None
     seven_day_avg: float | None = None
+    difficulty: str = "Easy"
+    session_id: int | None = None
 
 
 def new_session(
@@ -71,6 +78,7 @@ def new_session(
     stop_on_error: bool = False,
     limit_s: float = 60.0,
     timed: bool = True,
+    difficulty: str = "Easy",
 ) -> TypingSession:
     """Create fresh session for given text."""
     return TypingSession(
@@ -79,7 +87,15 @@ def new_session(
         stop_on_error=stop_on_error,
         limit_s=limit_s,
         timed=timed,
+        difficulty=difficulty,
     )
+
+
+from idle.typing.texts import (
+    build_difficulty_typing_text,
+    load_tiered_passages,
+    rate_passage,
+)
 
 
 def build_typing_text(
@@ -91,15 +107,17 @@ def build_typing_text(
     language: str = "python",
     rng: random.Random | None = None,
     words: list[str] | None = None,
+    difficulty: int | None = None,
 ) -> str:
     """Build typing text via texts helpers.
 
-    Test: build_typing_text("words", words=["hi","yo"],
-    num_words=2, rng=Random(0)) returns 2 tokens.
+    If difficulty is provided (0-4), uses build_difficulty_typing_text.
     """
     gen: random.Random = rng if rng is not None else random.Random()
+    if difficulty is not None:
+        return build_difficulty_typing_text(difficulty, num_words=num_words, rng=gen)
     if mode in ("time", "words"):
-        source: list[str] = list(words) if words is not None else load_words(word_list)
+        source: list[str] | None = list(words) if words is not None else None
         return make_text(
             mode,
             words=source,
@@ -109,18 +127,25 @@ def build_typing_text(
             numbers=numbers,
             rng=gen,
         )
-    if mode == "quote":
-        return make_text("quote", rng=gen)
+    if mode in ("quote", "passage", "passages"):
+        return make_text(mode, rng=gen)
     if mode == "code":
         return make_text("code", language=language, rng=gen)
     raise ValueError(f"unknown mode {mode!r}")
 
 
 def build_drill_text(
-    conn: sqlite3.Connection, words: list[str], length: int = 30
+    conn: sqlite3.Connection,
+    words: list[str],
+    length: int = 30,
+    weak_keys: int = 5,
+    difficulty: int = 0,
 ) -> str:
-    """Build drill text weighted to weak keys."""
-    return generate_drill_text(conn, words, length)
+    """Build drill text weighted to weak keys and difficulty."""
+    return generate_drill_text(
+        conn, words, length, weak_keys=weak_keys, difficulty=difficulty
+    )
+
 
 
 def drill_weak_avg(conn: sqlite3.Connection) -> float | None:
@@ -136,14 +161,31 @@ def new_typing_session(
     mode: str = "time",
     stop_on_error: bool = False,
     limit_s: float = 60.0,
+    difficulty: str = "Easy",
 ) -> TypingSession:
     """Create typing session with timed flag from mode."""
-    return new_session(text, mode, stop_on_error, limit_s, timed=(mode == "time"))
+    return new_session(
+        text,
+        mode,
+        stop_on_error,
+        limit_s,
+        timed=(mode == "time"),
+        difficulty=difficulty,
+    )
 
 
-def new_drill_session(text: str, stop_on_error: bool = False) -> TypingSession:
+def new_drill_session(
+    text: str,
+    stop_on_error: bool = False,
+    difficulty: str = "Easy",
+) -> TypingSession:
     """Create untimed drill session for given text."""
-    return new_session(text, "drill", stop_on_error, 0.0, timed=False)
+    return new_session(
+        text, "drill", stop_on_error, 0.0, timed=False, difficulty=difficulty
+    )
+
+
+IDLE_PAUSE_THRESHOLD: float = 2.5
 
 
 def _run_session(session: TypingSession, ch: str, now: float) -> bool:
@@ -157,7 +199,13 @@ def _run_session(session: TypingSession, ch: str, now: float) -> bool:
         return False
     exp: str = session.text[pos]
     last: float | None = session.last_ts
-    lat: float = (now - float(last)) * 1000.0 if last is not None else 0.0
+    if last is not None and (now - last) > IDLE_PAUSE_THRESHOLD:
+        session.paused_duration += now - last
+        lat: float = 0.0
+    elif last is not None:
+        lat = (now - last) * 1000.0
+    else:
+        lat = 0.0
     ok: bool = ch == exp
     session.total += 1
     if ok:
@@ -188,10 +236,14 @@ def apply_word_delete(session: TypingSession) -> None:
 
 
 def session_elapsed(session: TypingSession, now: float) -> float:
-    """Return seconds since first keypress."""
+    """Return active seconds since first keypress, pausing if idle > 2.5s."""
     if session.start_ts is None:
         return 0.0
-    return max(0.0, now - float(session.start_ts))
+    last = session.last_ts if session.last_ts is not None else session.start_ts
+    idle_time = now - last
+    effective_now = last if idle_time > IDLE_PAUSE_THRESHOLD else now
+    return max(0.0, effective_now - session.start_ts - session.paused_duration)
+
 
 
 def _uncorrected_count(session: TypingSession) -> int:
@@ -204,10 +256,11 @@ def _uncorrected_count(session: TypingSession) -> int:
 
 
 def session_net_wpm(session: TypingSession, now: float) -> float:
-    """Return live net WPM from current typed buffer."""
+    """Return live net WPM from correct chars."""
     elapsed: float = session_elapsed(session, now)
-    raw: float = calc_raw_wpm(session.total, elapsed)
-    return calc_net_wpm(raw, _uncorrected_count(session), elapsed)
+    if elapsed <= 0:
+        return 0.0
+    return calc_raw_wpm(session.correct, elapsed)
 
 
 def session_progress(session: TypingSession) -> float:
@@ -228,12 +281,15 @@ def session_header(session: TypingSession, now: float) -> str:
 
 
 def sample_spark(session: TypingSession, now: float) -> None:
-    """Append net WPM once per elapsed second."""
+    """Append instantaneous WPM once per elapsed second."""
     elapsed: float = session_elapsed(session, now)
     sec: int = int(elapsed)
     if sec >= 1 and sec > session.spark_sec:
         session.spark_sec = sec
-        session.spark.append(session_net_wpm(session, now))
+        chars_in_sec = session.correct - session.chars_prev_sec
+        session.chars_prev_sec = session.correct
+        instant = max(0.0, (chars_in_sec / 5.0) * 60.0)
+        session.spark.append(instant)
 
 
 def is_finished(session: TypingSession, now: float) -> bool:
@@ -245,15 +301,11 @@ def is_finished(session: TypingSession, now: float) -> bool:
 
 
 def finalize_result(session: TypingSession, now: float) -> dict[str, Any]:
-    """Build result dict with WPM accuracy spark per-key.
-
-    Test: s=new_session("hi"); _run_session(s,"h",1.0)
-    then finalize_result(s, 61.0) has net_wpm key.
-    """
+    """Build result dict with WPM accuracy spark per-key."""
     elapsed: float = session_elapsed(session, now)
     raw: float = calc_raw_wpm(session.total, elapsed)
+    net: float = calc_raw_wpm(session.correct, elapsed) if elapsed > 0 else 0.0
     bad: int = _uncorrected_count(session)
-    net: float = calc_net_wpm(raw, bad, elapsed)
     spark: list[float] = list(session.spark) if session.spark else [net]
     return {
         "net_wpm": net,
@@ -301,6 +353,7 @@ def save_and_refresh(session: TypingSession, conn: sqlite3.Connection) -> int | 
     )
     session.best = get_best(conn)
     session.seven_day_avg = get_7day_avg(conn)
+    session.session_id = sid
     return sid
 
 
@@ -315,8 +368,11 @@ def restart_session(session: TypingSession) -> None:
     session.last_ts = None
     session.spark = []
     session.spark_sec = -1
+    session.chars_prev_sec = 0
+    session.paused_duration = 0.0
     session.finished = False
     session.result = None
+    session.session_id = None
 
 
 def result_lines(session: TypingSession) -> list[str]:
@@ -327,7 +383,7 @@ def result_lines(session: TypingSession) -> list[str]:
     """
     res: dict[str, Any] = session.result or {}
     lines: list[str] = format_results(res, session.best, session.seven_day_avg)
-    lines.append("Tab/Enter restart  Esc back")
+    lines.append("Tab/Enter/Ctrl+R restart  Esc back")
     return lines
 
 
@@ -346,9 +402,15 @@ def _handle_results_key(event: Any, session: TypingSession) -> str | None:
     if int(getattr(event, "type", -1)) != pygame.KEYDOWN:
         return None
     key: int = int(getattr(event, "key", 0))
+    mod: int = int(getattr(event, "mod", 0))
+    ctrl: bool = bool(mod & pygame.KMOD_CTRL)
     if key == pygame.K_ESCAPE:
         return "back"
-    if key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_KP_ENTER):
+    if (ctrl and key == pygame.K_r) or key in (
+        pygame.K_TAB,
+        pygame.K_RETURN,
+        pygame.K_KP_ENTER,
+    ):
         restart_session(session)
         return "restart"
     return None
@@ -358,7 +420,7 @@ def _handle_textinput(event: Any, session: TypingSession, now: float) -> str | N
     """Fold TEXTINPUT chunk into session."""
     chunk: str = str(getattr(event, "text", ""))
     for ch in chunk:
-        if ch in ("\r", "\t"):
+        if ch in ("\r", "\t", "\x12"):
             continue
         _run_session(session, ch, now)
     sample_spark(session, now)
@@ -405,12 +467,15 @@ def _handle_keydown(event: Any, session: TypingSession, now: float) -> str | Non
     ctrl: bool = bool(mod & pygame.KMOD_CTRL)
     if key == pygame.K_ESCAPE:
         return "back"
+    if ctrl and key == pygame.K_r:
+        return "restart"
     if _handle_edit_key(key, ctrl, session):
         return None
     ret: str | None = _handle_return_key(key, session, now)
     if ret is not None:
         return ret
     return None
+
 
 
 def _handle_live_key(event: Any, session: TypingSession, now: float) -> str | None:
@@ -559,9 +624,15 @@ def _draw_session(surface: Any, state: Any, session: TypingSession, title: str) 
 
 def draw_typing(surface: Any, state: Any, session: TypingSession) -> None:
     """Draw typing session with live header and colors."""
-    _draw_session(surface, state, session, "Typing  Esc back")
+    diff_tag: str = (
+        f" [{session.difficulty}]" if getattr(session, "difficulty", "") else ""
+    )
+    _draw_session(surface, state, session, f"Typing{diff_tag}  Esc back")
 
 
 def draw_drill(surface: Any, state: Any, session: TypingSession) -> None:
     """Draw drill session via shared runner."""
-    _draw_session(surface, state, session, "Drill  Esc back")
+    diff_tag: str = (
+        f" [{session.difficulty}]" if getattr(session, "difficulty", "") else ""
+    )
+    _draw_session(surface, state, session, f"Drill{diff_tag}  Esc back")

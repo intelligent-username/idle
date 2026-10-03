@@ -15,7 +15,7 @@ MIN_W = 40
 SPARK_BLOCKS = "._-~*^#"
 QUIT_KEY = 27
 WORD_DELETE_KEY = 23
-RESTART_KEYS = (9, 10)
+RESTART_KEYS = (9, 10, 18)
 
 
 def _time_limit(opts: dict[str, Any]) -> float:
@@ -105,23 +105,38 @@ def _new_state() -> dict[str, Any]:
         "last_ts": None,
         "spark": [],
         "spark_sec": -1,
+        "chars_prev_sec": 0,
+        "paused_duration": 0.0,
     }
 
 
+PAUSE_THRESHOLD: float = 2.5
+
+
 def _elapsed(state: dict[str, Any], now: float) -> float:
-    """Return seconds since first keypress."""
-    start = state["start_ts"]
+    """Return active seconds since first keypress, pausing if idle > 2.5s."""
+    start = state.get("start_ts")
     if start is None:
         return 0.0
-    return max(0.0, now - float(start))
+    last = state.get("last_ts")
+    if last is None:
+        last = start
+    idle_time = now - float(last)
+    effective_now = float(last) if idle_time > PAUSE_THRESHOLD else now
+    paused = float(state.get("paused_duration", 0.0))
+    return max(0.0, effective_now - float(start) - paused)
 
 
 def _sample_spark(state: dict[str, Any], net: float, elapsed: float) -> None:
-    """Append net WPM once per elapsed second."""
+    """Append instantaneous WPM once per elapsed second."""
     sec = int(elapsed)
-    if sec >= 1 and sec > int(state["spark_sec"]):
+    if sec >= 1 and sec > int(state.get("spark_sec", -1)):
         state["spark_sec"] = sec
-        state["spark"].append(net)
+        curr = int(state.get("correct", 0))
+        prev = int(state.get("chars_prev_sec", 0))
+        state["chars_prev_sec"] = curr
+        instant = max(0.0, ((curr - prev) / 5.0) * 60.0)
+        state["spark"].append(instant)
 
 
 def _uncorrected(text: str, typed: list[str]) -> int:
@@ -134,19 +149,24 @@ def _uncorrected(text: str, typed: list[str]) -> int:
 
 
 def _net_for(state: dict[str, Any], text: str, elapsed: float) -> float:
-    """Return net WPM from state and uncorrected errors.
-
-    Test: state with total=300 correct after 60s gives net near 60.
-    """
-    raw = calc_raw_wpm(state["total"], elapsed)
-    bad = _uncorrected(text, state["typed"])
-    return calc_net_wpm(raw, bad, elapsed)
+    """Return net WPM from correct chars."""
+    if elapsed <= 0:
+        return 0.0
+    return calc_raw_wpm(int(state.get("correct", 0)), elapsed)
 
 
 def _record_press(state: dict[str, Any], ch: str, exp: str, now: float) -> bool:
     """Fold one char press into stats, return correctness."""
     last = state["last_ts"]
-    lat = (now - float(last)) * 1000.0 if last is not None else 0.0
+    if last is not None and (now - float(last)) > PAUSE_THRESHOLD:
+        state["paused_duration"] = float(state.get("paused_duration", 0.0)) + (
+            now - float(last)
+        )
+        lat = 0.0
+    elif last is not None:
+        lat = (now - float(last)) * 1000.0
+    else:
+        lat = 0.0
     ok = ch == exp
     state["total"] += 1
     if ok:
@@ -286,15 +306,12 @@ def _is_backspace(key: int, curses_mod: Any) -> bool:
 
 
 def _finalize(text: str, state: dict[str, Any], elapsed: float) -> dict[str, Any]:
-    """Build result dict with WPM accuracy spark per-key bigrams.
-
-    Test: _finalize("hi", fresh state, 60.0) has net/raw/accuracy keys.
-    """
+    """Build result dict with WPM accuracy spark per-key bigrams."""
     total = int(state["total"])
     correct = int(state["correct"])
     raw = calc_raw_wpm(total, elapsed)
     bad = _uncorrected(text, state["typed"])
-    net = calc_net_wpm(raw, bad, elapsed)
+    net = calc_raw_wpm(correct, elapsed) if elapsed > 0 else 0.0
     spark: list[float] = list(state["spark"])
     if not spark:
         spark = [net]

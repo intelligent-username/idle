@@ -64,7 +64,7 @@ Keyboard-first. Mouse optional.
 | Ctrl+C | Return to menu (from subscreen) / Exit program (from menu) |
 | Tab | Restart session (typing/drill) / Confirm |
 | Enter | Select / Confirm |
-| Arrows | Navigate lists and menus |
+| Arrows / A/D | Navigate lists, menus, and stats pagination |
 | Ctrl+W | Delete word |
 | Ctrl+T | Test LeetCode solution |
 | Ctrl+S | Submit LeetCode solution |

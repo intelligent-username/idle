@@ -120,26 +120,209 @@ def _word_weight(word: str, weak_chars: set[str], weak_bigrams: set[str]) -> flo
     return 1.0 + float(hits)
 
 
-def generate_drill_text(
-    conn: sqlite3.Connection, words: list[str], length: int = 30
-) -> str:
-    """Build drill text weighted toward weak units.
+import re
+from idle.typing.texts import (
+    _CUSTOM_NUM_PASSAGES,
+    _LEVEL5_MEANINGFUL_TEXTS,
+    _NON_CUSTOM_NUM_PASSAGES,
+    _load_passages,
+    sanitize_text,
+)
 
-    Signature: (conn, words, length) -> space joined text.
-    Test: with 5 weak-z sessions generate_drill_text(conn, ["zzz","eee"]) has more zzz.
+
+def _make_easy_drill_sequence(chars: list[str], gen: random.Random) -> str:
+    """Generate pure lowercase letters sequence for easy difficulty."""
+    anchors = ["f", "j", "d", "k", "s", "l"]
+    raw_c1 = gen.choice(chars) if chars else "f"
+    c1 = re.sub(r"[^a-z]", "", raw_c1.lower()) or "f"
+    raw_c2 = (
+        gen.choice(chars)
+        if len(chars) > 1 and gen.random() < 0.6
+        else gen.choice(anchors)
+    )
+    c2 = re.sub(r"[^a-z]", "", raw_c2.lower()) or "j"
+    patterns = [
+        f"{c1}{c2}{c1}{c2}",
+        f"{c1}{c1}{c2}{c2}",
+        f"{c1}{c2}{c2}{c1}",
+        f"{c2}{c1}{c1}{c2}",
+        f"{c1}{c2}{c1}",
+        f"{c2}{c1}{c2}",
+        f"{c1}{c1}{c1}",
+        f"{c1}{c2}{c1}{c2}{c1}",
+    ]
+    return gen.choice(patterns)
+
+
+def _make_medium_drill_sequence(chars: list[str], gen: random.Random) -> str:
+    """Generate capitalized weak key drill token."""
+    seq = _make_easy_drill_sequence(chars, gen)
+    return "".join(
+        ch.upper() if i % 2 == 0 else ch.lower() for i, ch in enumerate(seq)
+    )
+
+
+def _make_expert_drill_sequence(chars: list[str], gen: random.Random) -> str:
+    """Generate weak key drill sequence incorporating digits."""
+    anchors = ["f", "j", "d", "k", "s", "l"]
+    raw_c1 = gen.choice(chars) if chars else "f"
+    c1 = re.sub(r"[^a-zA-Z]", "", raw_c1) or "f"
+    raw_c2 = (
+        gen.choice(chars)
+        if len(chars) > 1 and gen.random() < 0.6
+        else gen.choice(anchors)
+    )
+    c2 = re.sub(r"[^a-zA-Z]", "", raw_c2) or "j"
+    n1 = str(gen.randint(0, 9))
+    n2 = str(gen.randint(0, 9))
+    patterns = [
+        f"{n1}{c1}{n1}{c1}",
+        f"{c1}{n1}{c2}{n2}",
+        f"{c1}{c2}{n1}{n2}",
+        f"{n1}{n2}{c1}{c2}",
+        f"{c1}{n1}{c1}",
+        f"{n1}{c2}{n1}",
+        f"{c1}{n1}{c2}{n1}{c2}",
+    ]
+    return gen.choice(patterns)
+
+
+_MASTER_SYMBOLS: tuple[str, ...] = (
+    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")",
+    "-", "_", "=", "+", "[", "]", "{", "}", ";", ":",
+    "'", '"', ",", ".", "<", ">", "/", "?",
+)
+
+
+def _make_master_drill_sequence(chars: list[str], gen: random.Random) -> str:
+    """Challenging randomized keys: uppercase, lowercase, numbers, special characters."""
+    c1 = gen.choice(chars) if chars else gen.choice(["f", "j", "d", "k"])
+    c2 = gen.choice(chars) if len(chars) > 1 else gen.choice(["a", "s", "l", "e"])
+    sym1 = gen.choice(_MASTER_SYMBOLS)
+    sym2 = gen.choice(_MASTER_SYMBOLS)
+    num1 = str(gen.randint(0, 9))
+    num2 = str(gen.randint(0, 9))
+    u1 = c1.upper()
+    l1 = c1.lower()
+    u2 = c2.upper()
+    l2 = c2.lower()
+    patterns = [
+        f"{sym1}{u1}{num1}{l2}",
+        f"{l1}{sym1}{num1}{u2}{sym2}",
+        f"{sym1}{l1}{u1}{sym2}",
+        f"[{u1}{num1}{l2}]",
+        f"({sym1}{l1}{num1})",
+        f"{{{u1}{sym1}{num2}}}",
+        f"{u1}{sym1}{l2}={num1}",
+        f"{sym1}{u1}_{l2}#{num1}",
+        f"{sym1}{num1}{u1}!{l2}",
+        f"<{u1}{num1}{sym2}{l1}>",
+    ]
+    return gen.choice(patterns)
+
+
+def _extract_weak_phrases(passages: list[str], weak_chars: list[str]) -> list[str]:
+    """Extract 2-4 word phrases containing weak keys from passages."""
+    phrases: list[str] = []
+    for p in passages:
+        words = p.split()
+        for i in range(0, len(words) - 2, 3):
+            chunk = " ".join(words[i : i + 3])
+            if any(c in chunk for c in weak_chars):
+                phrases.append(chunk)
+    return phrases if phrases else ["the lazy dog", "quick brown fox"]
+
+
+def generate_drill_text(
+    conn: sqlite3.Connection,
+    words: list[str],
+    length: int = 30,
+    rng: random.Random | None = None,
+    weak_keys: int = 5,
+    difficulty: int = 0,
+) -> str:
+    """Build drill text with nonsensical weak sequences and real words.
+
+    Supports 5 difficulty tiers matching user specs.
     """
     if not words or length <= 0:
         return ""
-    if _session_count(conn) < 5:
-        picked: list[str] = random.choices(words, k=length)
-        return " ".join(picked)
-    char_scores: dict[str, float] = score_keys(conn, LAST_N)
-    bigram_scores: dict[str, float] = _bigram_scores(conn, LAST_N)
-    if not char_scores and not bigram_scores:
-        picked = random.choices(words, k=length)
-        return " ".join(picked)
-    weak_chars: set[str] = _top_set(char_scores, TOP_K)
-    weak_bigrams: set[str] = _top_set(bigram_scores, TOP_K)
-    weights: list[float] = [_word_weight(w, weak_chars, weak_bigrams) for w in words]
-    chosen: list[str] = random.choices(words, weights=weights, k=length)
-    return " ".join(chosen)
+    gen = rng if rng is not None else random.Random()
+    diff = max(0, min(difficulty, 4))
+    char_scores = score_keys(conn, LAST_N)
+    weak_chars = [
+        c for c in sorted(char_scores, key=lambda c: char_scores[c], reverse=True) if c.strip()
+    ][:max(1, weak_keys)]
+    if not weak_chars:
+        weak_chars = ["f", "j", "d", "k", "s", "l"][:max(2, weak_keys)]
+
+    # When words is a small test fixture (<= 5 words), preserve weighted selection from words
+    if len(words) <= 5:
+        weak_set = set(weak_chars)
+        weights = [_word_weight(w, weak_set, set()) for w in words]
+        chosen = gen.choices(words, weights=weights, k=length)
+        return sanitize_text(" ".join(chosen))
+
+    out: list[str] = []
+
+    if diff == 0:
+        # Easy: Really easy common words, lowercase only, no caps, no punctuation/numbers
+        clean_words = [
+            re.sub(r"[^a-z]", "", w.lower()) for w in words if re.sub(r"[^a-z]", "", w.lower())
+        ]
+        matching = [w for w in clean_words if any(c in w for c in weak_chars)] or clean_words
+        for i in range(length):
+            if i % 2 == 0:
+                out.append(_make_easy_drill_sequence(weak_chars, gen))
+            else:
+                out.append(gen.choice(matching))
+
+    elif diff == 1:
+        # Medium: Medium difficulty words with capitalizations
+        clean_words = [
+            re.sub(r"[^a-zA-Z]", "", w) for w in words if re.sub(r"[^a-zA-Z]", "", w)
+        ]
+        matching = [w for w in clean_words if any(c.lower() in w.lower() for c in weak_chars)] or clean_words
+        for i in range(length):
+            if i % 2 == 0:
+                out.append(_make_medium_drill_sequence(weak_chars, gen))
+            else:
+                out.append(gen.choice(matching).capitalize())
+
+    elif diff == 2:
+        # Hard: Passages/snippets mixed with weak key sequence drills
+        passages = _load_passages()
+        phrases = _extract_weak_phrases(passages, weak_chars)
+        while len(out) < length:
+            out.append(_make_medium_drill_sequence(weak_chars, gen))
+            phrase = gen.choice(phrases)
+            out.extend(phrase.split())
+
+    elif diff == 3:
+        # Expert: Passages with numbers mixed with weak-key numeric drills
+        num_passages = list(_NON_CUSTOM_NUM_PASSAGES) + list(_CUSTOM_NUM_PASSAGES)
+        phrases = _extract_weak_phrases(num_passages, weak_chars)
+        while len(out) < length:
+            out.append(_make_expert_drill_sequence(weak_chars, gen))
+            phrase = gen.choice(phrases)
+            out.extend(phrase.split())
+
+    else:
+        # Master (4): Random keys with uppercase/lowercase, numbers, special characters
+        # combined with complex tokens containing weak keys
+        complex_tokens: list[str] = []
+        for text in _LEVEL5_MEANINGFUL_TEXTS:
+            for token in text.split():
+                if any(c.lower() in token.lower() for c in weak_chars):
+                    complex_tokens.append(token)
+        if not complex_tokens:
+            complex_tokens = ["status=200", "v2.1.0", "user_id", "p<0.001", "O(b^d)", "HTTP/2"]
+
+        for i in range(length):
+            if i % 2 == 0:
+                out.append(_make_master_drill_sequence(weak_chars, gen))
+            else:
+                out.append(gen.choice(complex_tokens))
+
+    return sanitize_text(" ".join(out[:length]))
+

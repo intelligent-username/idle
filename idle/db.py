@@ -151,19 +151,30 @@ def save_typing_session(
     return session_id
 
 
+def delete_typing_session(conn: sqlite3.Connection, session_id: int) -> None:
+    """Delete one typing session with associated stats in single transaction."""
+    with conn:
+        conn.execute("DELETE FROM key_stats WHERE session_id = ?;", (session_id,))
+        conn.execute("DELETE FROM bigram_stats WHERE session_id = ?;", (session_id,))
+        conn.execute("DELETE FROM typing_sessions WHERE id = ?;", (session_id,))
+
+
 def get_best(conn: sqlite3.Connection) -> float | None:
-    """Return max net WPM or None when no sessions."""
-    row = conn.execute("SELECT MAX(net_wpm) FROM typing_sessions;").fetchone()
+    """Return max net WPM or None when no sessions, excluding drills."""
+    row = conn.execute(
+        "SELECT MAX(net_wpm) FROM typing_sessions WHERE mode != 'drill';"
+    ).fetchone()
     if not row or row[0] is None:
         return None
     return float(row[0])
 
 
 def get_7day_avg(conn: sqlite3.Connection) -> float | None:
-    """Return avg net WPM for last 7 days or None."""
+    """Return avg net WPM for last 7 days or None, excluding drills."""
     cutoff: str = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     row = conn.execute(
-        "SELECT AVG(net_wpm) FROM typing_sessions WHERE ts >= ?;", (cutoff,)
+        "SELECT AVG(net_wpm) FROM typing_sessions WHERE ts >= ? AND mode != 'drill';",
+        (cutoff,),
     ).fetchone()
     if not row or row[0] is None:
         return None

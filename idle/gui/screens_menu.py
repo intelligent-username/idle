@@ -6,6 +6,8 @@ from typing import Any
 from idle.gui.state import Screen
 
 __all__: list[str] = [
+    "DIFFICULTIES",
+    "DIFFICULTY_COLORS",
     "MENU_LABELS",
     "format_header",
     "get_best_value",
@@ -14,6 +16,22 @@ __all__: list[str] = [
     "menu_target",
     "handle_menu",
     "draw_menu",
+]
+
+DIFFICULTIES: list[str] = [
+    "Easy",
+    "Medium",
+    "Hard",
+    "Expert",
+    "Master",
+]
+
+DIFFICULTY_COLORS: list[tuple[int, int, int]] = [
+    (74, 222, 128),  # Green (theme.CORRECT)
+    (96, 165, 250),  # Cyan / Blue (theme.ACCENT)
+    (251, 191, 36),  # Amber / Yellow
+    (251, 146, 60),  # Orange
+    (248, 113, 113),  # Red (theme.WRONG)
 ]
 
 MENU_LABELS: list[str] = [
@@ -25,7 +43,7 @@ MENU_LABELS: list[str] = [
     "6) quit",
 ]
 
-FOOTER_HINT: str = "Up/Down + Enter, 1-6, Esc quit"
+FOOTER_HINT: str = "Up/Down select, Left/Right diff, Enter/1-6 start, Esc quit"
 
 
 def get_best_value(conn: Any) -> float | None:
@@ -108,7 +126,9 @@ def _activate(index: int) -> tuple[int, Screen | None, bool]:
     return (index, menu_target(index), False)
 
 
-def handle_menu(event: Any, selected: int) -> tuple[int, Screen | None, bool]:
+def handle_menu(
+    event: Any, selected: int, state: Any = None
+) -> tuple[int, Screen | None, bool]:
     """Handle arrows, numbers, Enter, Esc for menu."""
     import pygame
 
@@ -123,6 +143,26 @@ def handle_menu(event: Any, selected: int) -> tuple[int, Screen | None, bool]:
         return ((cur - 1) % count, None, False)
     if key == pygame.K_DOWN:
         return ((cur + 1) % count, None, False)
+    if key == pygame.K_LEFT:
+        if cur == 0 and state is not None:
+            state.typing_difficulty = (
+                getattr(state, "typing_difficulty", 0) - 1
+            ) % len(DIFFICULTIES)
+        elif cur == 1 and state is not None:
+            state.drill_difficulty = (
+                getattr(state, "drill_difficulty", 0) - 1
+            ) % len(DIFFICULTIES)
+        return (cur, None, False)
+    if key == pygame.K_RIGHT:
+        if cur == 0 and state is not None:
+            state.typing_difficulty = (
+                getattr(state, "typing_difficulty", 0) + 1
+            ) % len(DIFFICULTIES)
+        elif cur == 1 and state is not None:
+            state.drill_difficulty = (
+                getattr(state, "drill_difficulty", 0) + 1
+            ) % len(DIFFICULTIES)
+        return (cur, None, False)
     if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
         return _activate(cur)
     num: int | None = _number_index(key)
@@ -156,7 +196,33 @@ def draw_menu(surface: Any, state: Any, selected: int, header: str) -> None:
         img: Any = font.render(line, True, theme.FG)
         surface.blit(img, (24, y))
         idx: int = pos - 2
-        if 0 <= idx < len(MENU_LABELS) and idx == selected:
-            w: int = img.get_width() + 16
-            pygame.draw.rect(surface, theme.ACCENT, (16, y - 2, w, row_h), 1)
+        if 0 <= idx < len(MENU_LABELS):
+            if idx == 0:
+                diff_idx: int = (
+                    getattr(state, "typing_difficulty", 0) % len(DIFFICULTIES)
+                )
+                diff_name: str = DIFFICULTIES[diff_idx]
+                diff_color: tuple[int, int, int] = DIFFICULTY_COLORS[diff_idx]
+                centered: str = diff_name.center(6)
+                diff_text: str = (
+                    f"< {centered} >" if idx == selected else f"  {centered}  "
+                )
+                diff_img: Any = font.render(diff_text, True, diff_color)
+                surface.blit(diff_img, (220, y))
+            elif idx == 1:
+                diff_idx = (
+                    getattr(state, "drill_difficulty", 0) % len(DIFFICULTIES)
+                )
+                diff_name = DIFFICULTIES[diff_idx]
+                diff_color = DIFFICULTY_COLORS[diff_idx]
+                centered = diff_name.center(6)
+                diff_text = (
+                    f"< {centered} >" if idx == selected else f"  {centered}  "
+                )
+                diff_img = font.render(diff_text, True, diff_color)
+                surface.blit(diff_img, (220, y))
+
+            if idx == selected:
+                w: int = img.get_width() + 16
+                pygame.draw.rect(surface, theme.ACCENT, (16, y - 2, w, row_h), 1)
         y += row_h

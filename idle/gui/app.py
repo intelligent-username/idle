@@ -73,20 +73,77 @@ def _new_runtime() -> _Runtime:
     )
 
 
+TYPING_DIFFICULTIES: list[dict[str, Any]] = [
+    {
+        "name": "Easy",
+        "num_words": 25,
+        "limit_s": 300.0,
+        "punct": False,
+        "numbers": False,
+        "stop_on_error": False,
+    },
+    {
+        "name": "Medium",
+        "num_words": 40,
+        "limit_s": 300.0,
+        "punct": False,
+        "numbers": False,
+        "stop_on_error": False,
+    },
+    {
+        "name": "Hard",
+        "num_words": 60,
+        "limit_s": 300.0,
+        "punct": True,
+        "numbers": False,
+        "stop_on_error": False,
+    },
+    {
+        "name": "Expert",
+        "num_words": 75,
+        "limit_s": 300.0,
+        "punct": True,
+        "numbers": True,
+        "stop_on_error": False,
+    },
+    {
+        "name": "Master",
+        "num_words": 90,
+        "limit_s": 300.0,
+        "punct": True,
+        "numbers": True,
+        "stop_on_error": False,
+    },
+]
+
+DRILL_DIFFICULTIES: list[dict[str, Any]] = [
+    {"name": "Easy", "length": 30, "weak_keys": 3, "stop_on_error": False},
+    {"name": "Medium", "length": 45, "weak_keys": 5, "stop_on_error": False},
+    {"name": "Hard", "length": 60, "weak_keys": 7, "stop_on_error": False},
+    {"name": "Expert", "length": 75, "weak_keys": 9, "stop_on_error": False},
+    {"name": "Master", "length": 90, "weak_keys": 12, "stop_on_error": False},
+]
+
+
 def _enter_typing(rt: _Runtime) -> None:
-    """Start typing session from config, friendly on error."""
+    """Start typing session from config and difficulty, friendly on error."""
     from idle.gui import screens_typing
 
     cfg: Any = rt.state.config.get("typing", {})
     if not isinstance(cfg, dict):
         cfg = {}
+    diff_idx: int = (
+        getattr(rt.state, "typing_difficulty", 0) % len(TYPING_DIFFICULTIES)
+    )
+    diff = TYPING_DIFFICULTIES[diff_idx]
     try:
         text: str = screens_typing.build_typing_text(
             mode=str(cfg.get("default_mode", "time")),
             word_list=int(cfg.get("word_list", 200)),
-            num_words=int(cfg.get("default_words", 50)),
-            punct=bool(cfg.get("punct", False)),
-            numbers=bool(cfg.get("numbers", False)),
+            num_words=int(diff["num_words"]),
+            punct=bool(diff["punct"]),
+            numbers=bool(diff["numbers"]),
+            difficulty=diff_idx,
         )
     except (OSError, RuntimeError, ValueError):
         rt.state.message = "could not load words (offline?)."
@@ -94,14 +151,21 @@ def _enter_typing(rt: _Runtime) -> None:
     rt.typing = screens_typing.new_typing_session(
         text,
         mode=str(cfg.get("default_mode", "time")),
-        stop_on_error=bool(cfg.get("stop_on_error", False)),
-        limit_s=float(cfg.get("default_time", 60)),
+        stop_on_error=bool(diff["stop_on_error"]),
+        limit_s=float(diff["limit_s"]),
+        difficulty=str(diff["name"]),
     )
     rt.state.message = ""
 
 
-def _drill_text(db_path: str, words: list[str]) -> str:
-    """Build weak-key drill text using existing DB scores."""
+def _drill_text(
+    db_path: str,
+    words: list[str],
+    length: int = 30,
+    weak_keys: int = 5,
+    difficulty: int = 0,
+) -> str:
+    """Build weak-key drill text using existing DB scores and difficulty."""
     from pathlib import Path
 
     from idle.db import get_db
@@ -109,7 +173,13 @@ def _drill_text(db_path: str, words: list[str]) -> str:
 
     conn = get_db(Path(db_path))
     try:
-        return screens_typing.build_drill_text(conn, words)
+        return screens_typing.build_drill_text(
+            conn,
+            words,
+            length=length,
+            weak_keys=weak_keys,
+            difficulty=difficulty,
+        )
     finally:
         conn.close()
 
@@ -121,25 +191,41 @@ def _enter_drill(rt: _Runtime) -> None:
     cfg: Any = rt.state.config.get("typing", {})
     if not isinstance(cfg, dict):
         cfg = {}
+    diff_idx: int = (
+        getattr(rt.state, "drill_difficulty", 0) % len(DRILL_DIFFICULTIES)
+    )
+    diff = DRILL_DIFFICULTIES[diff_idx]
+    length: int = int(diff["length"])
+    weak_keys: int = int(diff["weak_keys"])
+    stop: bool = bool(diff["stop_on_error"])
+
     try:
         words: list[str] = screens_typing.load_words(
-            int(cfg.get("word_list", 200))
+            1000 if diff_idx >= 1 else 200
         )
     except (OSError, RuntimeError, ValueError):
         rt.state.message = "could not load words (offline?)."
         return
-    text: str = " ".join(words[:30]) if words else ""
+    text: str = " ".join(words[:length]) if words else ""
     if rt.state.db_path and words:
         try:
-            text = _drill_text(rt.state.db_path, words)
+            text = _drill_text(
+                rt.state.db_path,
+                words,
+                length=length,
+                weak_keys=weak_keys,
+                difficulty=diff_idx,
+            )
         except (OSError, RuntimeError, ValueError):
             pass
     if not text:
         rt.state.message = "no drill text available."
         return
-    stop: bool = bool(cfg.get("stop_on_error", False))
-    rt.drill = screens_typing.new_drill_session(text, stop_on_error=stop)
+    rt.drill = screens_typing.new_drill_session(
+        text, stop_on_error=stop, difficulty=str(diff["name"])
+    )
     rt.state.message = ""
+
 
 
 def _enter_lc_list(rt: _Runtime) -> None:
@@ -160,12 +246,12 @@ def _enter_stats(rt: _Runtime) -> None:
     from idle.gui import screens_stats
 
     if not rt.state.db_path:
-        rt.stats_data = screens_stats.load_stats(".", 0)
+        rt.stats_data = screens_stats.load_stats(".", limit=10, offset=0)
         return
     try:
-        rt.stats_data = screens_stats.load_stats(rt.state.db_path)
+        rt.stats_data = screens_stats.load_stats(rt.state.db_path, limit=10, offset=0)
     except (OSError, RuntimeError, ValueError):
-        rt.stats_data = screens_stats.load_stats(".", 0)
+        rt.stats_data = screens_stats.load_stats(".", limit=10, offset=0)
 
 
 def _enter_config(rt: _Runtime) -> None:
@@ -201,13 +287,45 @@ def _go_back(rt: _Runtime) -> None:
         rt.menu_header = _menu_header(rt.state.db_path)
 
 
+def _discard_session(session: Any, db_path: str) -> None:
+    """Discard unfinished/aborted session, deleting from DB if saved before completion."""
+    if session is None:
+        return
+    if getattr(session, "finished", False):
+        return
+    session_id: int | None = getattr(session, "session_id", None)
+    if session_id is not None and db_path:
+        from pathlib import Path
+        from idle.db import clear_header_cache, delete_typing_session, get_db
+
+        try:
+            conn = get_db(Path(db_path))
+            try:
+                delete_typing_session(conn, session_id)
+                clear_header_cache()
+            finally:
+                conn.close()
+        except OSError:
+            pass
+        session.session_id = None
+
+
+def _discard_current_session(rt: _Runtime) -> None:
+    """Discard typing or drill session without adding to history."""
+    if rt.typing is not None:
+        _discard_session(rt.typing, rt.state.db_path)
+        rt.typing = None
+    if rt.drill is not None:
+        _discard_session(rt.drill, rt.state.db_path)
+        rt.drill = None
+
+
 def _go_menu(rt: _Runtime) -> None:
     """Clear screen stack, reset session state, and return to menu."""
     rt.show_login = False
+    _discard_current_session(rt)
     rt.state.stack.clear()
     rt.state.screen = Screen.MENU
-    rt.typing = None
-    rt.drill = None
     rt.menu_header = _menu_header(rt.state.db_path)
 
 
@@ -393,7 +511,9 @@ def _handle_menu(event: Any, rt: _Runtime) -> bool:
     selected: int
     target: Any
     quit: bool
-    selected, target, quit = screens_menu.handle_menu(event, rt.menu_selected)
+    selected, target, quit = screens_menu.handle_menu(
+        event, rt.menu_selected, rt.state
+    )
     rt.menu_selected = selected
     if quit:
         return True
@@ -419,7 +539,14 @@ def _handle_session(event: Any, rt: _Runtime) -> bool:
     else:
         action = screens_typing.handle_drill(event, session)
     if action == "back":
+        _discard_current_session(rt)
         _go_back(rt)
+    elif action == "restart":
+        _discard_current_session(rt)
+        if is_type:
+            _enter_typing(rt)
+        else:
+            _enter_drill(rt)
     elif action == "finished":
         rt.state.message = _save_finished(session, rt.state.db_path)
     return False
@@ -489,7 +616,7 @@ def _handle_info(event: Any, rt: _Runtime) -> bool:
     from idle.gui import screens_stats
 
     if rt.state.screen == Screen.STATS:
-        if screens_stats.handle_stats(event):
+        if screens_stats.handle_stats(event, rt.stats_data, rt.state.db_path):
             _go_back(rt)
     elif rt.state.screen == Screen.CONFIG:
         if screens_stats.handle_config(event):
@@ -582,6 +709,15 @@ def run_gui(
                     w: int = int(getattr(event, "w", theme.LOGICAL_W))
                     h: int = int(getattr(event, "h", theme.LOGICAL_H))
                     surface = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+                if etype in (
+                    getattr(pygame, "WINDOWFOCUSGAINED", 32784),
+                    getattr(pygame, "ACTIVEEVENT", 1),
+                    pygame.MOUSEBUTTONDOWN,
+                ):
+                    try:
+                        pygame.key.start_text_input()
+                    except Exception:
+                        pass
                 elif etype in (pygame.KEYDOWN, pygame.TEXTINPUT):
                     screen_before = (rt.state.screen, rt.show_login)
                     if _handle_current(event, rt):
