@@ -8,35 +8,38 @@ from idle.lc.commands import RELOGIN_MSG
 from idle.lc.scaffold import strip_header
 
 __all__: list[str] = [
+    "LcDetailState",
     "LcFilters",
     "LcListState",
-    "LcDetailState",
-    "LcSolveState",
     "LcLoginState",
-    "format_problem_row",
+    "LcSolveState",
     "apply_lc_filters",
-    "format_verdict_panel",
-    "verdict_summary",
-    "editor_seed",
-    "load_problem_list",
-    "refresh_problem_list",
-    "load_detail",
-    "load_daily",
-    "scaffold_to_disk",
-    "run_test_action",
-    "run_submit_action",
-    "open_problem",
     "auth_needed",
-    "try_save_login",
-    "try_login_password",
-    "draw_lc_list",
     "draw_lc_detail",
-    "draw_lc_solve",
+    "draw_lc_list",
     "draw_lc_login",
-    "handle_lc_list",
+    "draw_lc_solve",
+    "editor_seed",
+    "format_problem_row",
+    "format_verdict_panel",
     "handle_lc_detail",
-    "handle_lc_solve",
+    "handle_lc_list",
     "handle_lc_login",
+    "handle_lc_solve",
+    "load_daily",
+    "load_detail",
+    "load_problem_list",
+    "open_problem",
+    "pick_random_problem",
+    "refresh_problem_list",
+    "repick_random",
+    "run_submit_action",
+    "run_test_action",
+    "scaffold_to_disk",
+    "toggle_new_only",
+    "try_login_password",
+    "try_save_login",
+    "verdict_summary",
 ]
 
 LOGIN_SAVED_MSG: str = "saved login"
@@ -69,6 +72,8 @@ class LcListState:
     needs_login: bool = False
     tag_edit: bool = False
     tag_box: Textbox = field(default_factory=Textbox)
+    new_only: bool = True
+    current: dict[str, Any] | None = None
 
 
 @dataclass
@@ -101,10 +106,12 @@ class LcSolveState:
 
 @dataclass
 class LcLoginState:
-    """Login form state with two fields."""
+    """Login form state with username and password."""
 
     session_box: Textbox = field(default_factory=Textbox)
     csrf_box: Textbox = field(default_factory=Textbox)
+    username_box: Textbox = field(default_factory=Textbox)
+    password_box: Textbox = field(default_factory=Textbox)
     focus: int = 0
     message: str = ""
     saved: bool = False
@@ -269,17 +276,54 @@ def load_problem_list(refresh: bool = False) -> tuple[list[dict[str, Any]], str,
     return problems, "", False
 
 
+def pick_random_problem(
+    problems: list[dict[str, Any]],
+    new_only: bool,
+    difficulty: str | None = None,
+    tag: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Pick one random problem, todo-only when new_only."""
+    import random
+
+    from idle.lc.commands import _filter_problems
+
+    want_status: str | None = "todo" if new_only else status
+    want_tag: list[str] | None = _tags_arg(tag)
+    rows: list[dict[str, Any]] = _filter_problems(
+        problems, difficulty, want_tag, want_status
+    )
+    if not rows:
+        return None
+    return random.choice(rows)
+
+
 def _rebuild_list_items(view: LcListState) -> None:
-    """Reapply filters and rebuild visible list rows."""
-    rows: list[dict[str, Any]] = apply_lc_filters(
+    """Pick single random row respecting new_only, no bulk list."""
+    pick: dict[str, Any] | None = pick_random_problem(
         view.problems,
+        view.new_only,
         view.filters.difficulty,
         view.filters.tag,
         view.filters.status,
-        view.filters.limit,
     )
-    labels: list[str] = [format_problem_row(p) for p in rows]
+    view.current = pick
+    if pick is None:
+        view.items = ScrollableList([])
+        return
+    labels: list[str] = [format_problem_row(pick)]
     view.items = ScrollableList(labels, selected=0, visible_count=12)
+
+
+def toggle_new_only(view: LcListState) -> None:
+    """Toggle new-only filter and repick single random."""
+    view.new_only = not view.new_only
+    _rebuild_list_items(view)
+
+
+def repick_random(view: LcListState) -> None:
+    """Pick another random from cached problems, no network."""
+    _rebuild_list_items(view)
 
 
 def refresh_problem_list(view: LcListState, refresh: bool = False) -> None:
@@ -590,7 +634,7 @@ def _draw_bar(surface: Any, font: Any, text: str, y: int) -> None:
 
 
 def draw_lc_list(surface: Any, font: Any, view: LcListState) -> None:
-    """Draw filter bar, problem rows, footer hints."""
+    """Draw single random problem plus new-only checkbox."""
     import pygame
 
     from idle.gui import theme as theme_mod
@@ -600,28 +644,34 @@ def draw_lc_list(surface: Any, font: Any, view: LcListState) -> None:
     h: int = surface.get_height()
     filt: str = (
         f"d:{view.filters.difficulty or 'All'} "
-        f"s:{view.filters.status or 'All'} "
-        f"t:{view.filters.tag or 'All'} "
-        f"n:{view.filters.limit}"
+        f"t:{view.filters.tag or 'All'}"
     )
     if view.tag_edit:
         filt += " [tag-edit Enter done]"
-    _draw_bar(surface, font, "LC List | " + filt, 8)
-    row_h: int = font.get_linesize() + 2
-    start_y: int = 36
-    end: int = min(len(view.items.items), view.items.offset + 14)
-    for i in range(view.items.offset, end):
-        row_y: int = start_y + (i - view.items.offset) * row_h
-        row = pygame.Rect(8, row_y, w - 16, row_h)
-        if i == view.items.selected:
-            surface.fill(theme_mod.DIM, row)
-        img = font.render(view.items.items[i][:110], True, theme_mod.FG)
-        surface.blit(img, (12, row_y))
+    _draw_bar(surface, font, "LC Random | " + filt, 8)
+    check: str = "[x]" if view.new_only else "[ ]"
+    _draw_bar(surface, font, f"{check} new problems only (n to toggle)", 30)
+    if view.current is None:
+        _draw_bar(
+            surface,
+            font,
+            "no unsolved problems match filters. g retry, r refresh",
+            58,
+        )
+    else:
+        row = pygame.Rect(8, 56, w - 16, font.get_linesize() + 6)
+        surface.fill(theme_mod.DIM, row)
+        line: str = format_problem_row(view.current)[:110]
+        img = font.render(line, True, theme_mod.FG)
+        surface.blit(img, (12, 58))
+        title: str = str(view.current.get("title", ""))[:100]
+        diff: str = str(view.current.get("difficulty", ""))
+        _draw_bar(surface, font, f"{title} [{diff}]", 86)
     _draw_bar(surface, font, view.message[:120] if view.message else "", h - 56)
     _draw_bar(
         surface,
         font,
-        "d diff s status t tag -/+ n r refresh Enter open a daily Esc back",
+        "g random n new-only d diff t tag r refresh Enter open Esc back",
         h - 28,
     )
 
@@ -660,7 +710,7 @@ def draw_lc_solve(surface: Any, font: Any, view: LcSolveState) -> None:
 
 
 def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
-    """Draw login form with two fields and focus ring."""
+    """Draw username and password login form."""
     import pygame
 
     from idle.gui import theme as theme_mod
@@ -668,16 +718,16 @@ def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
     surface.fill(theme_mod.BG)
     w: int = surface.get_width()
     _draw_bar(surface, font, "Login | Tab switch Enter save Esc back", 8)
-    labels: list[str] = ["LEETCODE_SESSION", "csrftoken"]
-    boxes: list[Textbox] = [view.session_box, view.csrf_box]
+    labels: list[str] = ["username", "password"]
+    boxes: list[Textbox] = [view.username_box, view.password_box]
     for idx in range(2):
         y: int = 60 + idx * 80
-        masked: str = "*" * len(boxes[idx].text)
+        shown: str = boxes[idx].text if idx == 0 else "*" * len(boxes[idx].text)
         _draw_bar(surface, font, labels[idx], y)
         area = pygame.Rect(12, y + 22, w - 24, 40)
         color = theme_mod.ACCENT if view.focus == idx else theme_mod.DIM
         pygame.draw.rect(surface, color, area, 2 if view.focus == idx else 1)
-        img = font.render(masked[-60:], True, theme_mod.FG)
+        img = font.render(shown[-60:], True, theme_mod.FG)
         surface.blit(img, (18, y + 30))
     _draw_bar(surface, font, view.message[:120] if view.message else "", 240)
 
@@ -709,7 +759,7 @@ def _handle_list_nav(event: Any, view: LcListState) -> str | None:
 
 
 def _handle_list_shortcut(event: Any, view: LcListState) -> str | None:
-    """Handle d s - = r a keys for filters and refresh."""
+    """Handle d s n g r keys for random single plus refresh."""
     import pygame
 
     if int(getattr(event, "type", -1)) != pygame.KEYDOWN:
@@ -723,6 +773,11 @@ def _handle_list_shortcut(event: Any, view: LcListState) -> str | None:
         view.filters.status = _cycle_next(view.filters.status, STATUS_CYCLE)
         _rebuild_list_items(view)
         return None
+    if key == pygame.K_n:
+        toggle_new_only(view)
+        return None
+    if key == pygame.K_g:
+        return "random"
     if key == pygame.K_MINUS:
         view.filters.limit = max(LIMIT_MIN, view.filters.limit - LIMIT_STEP)
         _rebuild_list_items(view)
@@ -831,10 +886,10 @@ def handle_lc_solve(event: Any, view: LcSolveState) -> str | None:
 
 
 def _login_focused(view: LcLoginState) -> Textbox:
-    """Return currently focused login box."""
+    """Return currently focused username or password box."""
     if view.focus == 1:
-        return view.csrf_box
-    return view.session_box
+        return view.password_box
+    return view.username_box
 
 
 def handle_lc_login(event: Any, view: LcLoginState) -> str | None:
@@ -865,10 +920,14 @@ def handle_lc_login(event: Any, view: LcLoginState) -> str | None:
             return None
         ok: bool
         msg: str
-        ok, msg = try_save_login(view.session_box.text, view.csrf_box.text)
+        ok, msg = try_login_password(
+            view.username_box.text, view.password_box.text
+        )
         view.message = msg
         view.saved = ok
         if ok:
+            view.username_box = Textbox()
+            view.password_box = Textbox()
             view.session_box = Textbox()
             view.csrf_box = Textbox()
             return "login_ok"

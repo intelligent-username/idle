@@ -229,11 +229,14 @@ def _enter_drill(rt: _Runtime) -> None:
 
 
 def _enter_lc_list(rt: _Runtime) -> None:
-    """Refresh LC list once when empty, show login on expiry."""
+    """Require login first, lazy-load single random after auth."""
     from idle.gui import screens_lc
 
     if rt.lc_list is None:
         rt.lc_list = screens_lc.LcListState()
+    if screens_lc.auth_needed():
+        rt.show_login = True
+        return
     view: Any = rt.lc_list
     if not view.problems and not view.message:
         screens_lc.refresh_problem_list(view)
@@ -330,22 +333,26 @@ def _go_menu(rt: _Runtime) -> None:
 
 
 def _open_selected(rt: _Runtime) -> None:
-    """Open selected LC row in detail view."""
+    """Open current random problem in detail view."""
     from idle.gui import screens_lc
 
     view: Any = rt.lc_list
-    rows: list[dict[str, Any]] = screens_lc.apply_lc_filters(
-        view.problems,
-        view.filters.difficulty,
-        view.filters.tag,
-        view.filters.status,
-        view.filters.limit,
-    )
-    idx: int = int(view.items.selected)
-    if not 0 <= idx < len(rows):
-        view.message = "no problem selected."
-        return
-    row: dict[str, Any] = rows[idx]
+    current: Any = getattr(view, "current", None)
+    if isinstance(current, dict) and current.get("slug"):
+        row: dict[str, Any] = current
+    else:
+        rows: list[dict[str, Any]] = screens_lc.apply_lc_filters(
+            view.problems,
+            view.filters.difficulty,
+            view.filters.tag,
+            view.filters.status,
+            view.filters.limit,
+        )
+        idx: int = int(view.items.selected)
+        if not 0 <= idx < len(rows):
+            view.message = "no problem selected."
+            return
+        row = rows[idx]
     key: str = str(row.get("slug") or row.get("id") or "")
     detail: Any
     text: str
@@ -553,12 +560,14 @@ def _handle_session(event: Any, rt: _Runtime) -> bool:
 
 
 def _handle_list(event: Any, rt: _Runtime) -> None:
-    """Handle LC list nav, filters, refresh, open, daily."""
+    """Handle LC random nav, filters, refresh, open, daily."""
     from idle.gui import screens_lc
 
     action: Any = screens_lc.handle_lc_list(event, rt.lc_list)
     if action == "back":
         _go_back(rt)
+    elif action == "random":
+        screens_lc.repick_random(rt.lc_list)
     elif action == "refresh":
         screens_lc.refresh_problem_list(rt.lc_list, refresh=True)
         if rt.lc_list.needs_login:
@@ -625,7 +634,7 @@ def _handle_info(event: Any, rt: _Runtime) -> bool:
 
 
 def _handle_login(event: Any, rt: _Runtime) -> bool:
-    """Handle login form save and back. Never quits."""
+    """Handle username login, lazy-load random on success."""
     from idle.gui import screens_lc
 
     action: Any = screens_lc.handle_lc_login(event, rt.login)
@@ -634,6 +643,13 @@ def _handle_login(event: Any, rt: _Runtime) -> bool:
     elif action == "login_ok":
         rt.show_login = False
         rt.state.message = "saved login"
+        try:
+            if rt.lc_list is not None and not rt.lc_list.problems:
+                screens_lc.refresh_problem_list(rt.lc_list)
+                if rt.lc_list.needs_login:
+                    rt.show_login = True
+        except (OSError, RuntimeError):
+            pass
     return False
 
 
