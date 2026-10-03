@@ -47,3 +47,35 @@ def test_save_default_config_idempotent(_tmp_home: Path) -> None:
     config.save_default_config()
     second: str = cfg_path.read_text(encoding="utf-8")
     assert first == second
+
+
+def test_cli_typing_and_leetcode_aliases() -> None:
+    from idle.cli import build_parser
+
+    parser = build_parser()
+    args1 = parser.parse_args(["typing"])
+    assert args1.command == "typing"
+    args2 = parser.parse_args(["leetcode", "list"])
+    assert args2.command == "leetcode"
+    assert args2.lc_command == "list"
+
+
+def test_cli_gui_flag_on_subcommands() -> None:
+    from idle.cli import build_parser
+
+    parser = build_parser()
+    args1 = parser.parse_args(["type", "--gui"])
+    assert args1.command == "type"
+    assert args1.gui is True
+
+    args2 = parser.parse_args(["drill", "--gui"])
+    assert args2.command == "drill"
+    assert args2.gui is True
+
+    args3 = parser.parse_args(["lc", "--gui"])
+    assert args3.command == "lc"
+    assert args3.gui is True
+
+    args4 = parser.parse_args(["--gui", "stats"])
+    assert args4.command == "stats"
+    assert args4.gui is True

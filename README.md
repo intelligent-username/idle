@@ -10,47 +10,67 @@ Keyboard-only companion for typing practice and LeetCode in a terminal pane.
 
 ## Setup & Running
 
-Setup (installs CLI and GUI deps):
+Setup (installs dependencies):
 
 ```powershell
 uv sync
 ```
 
-Run (GUI is default):
+### GUI Mode (Default)
+
+Launch full GUI main menu:
 
 ```powershell
 uv run idle
-
-# Or
-uv run python -m idle
+# or
 uv run idle gui
-
-# To run in terminal mode
-uv run idle --cli
-
-# To skip directly to typing practice:
-uv run idle type
-
 ```
 
-GUI launches on `idle`, `python -m idle`, and `idle gui`. CLI subcommands still work unchanged. No separate `pip install idle[gui]` needed. Use `idle --cli` for terminal menu.
+Open a specific GUI screen directly using `--gui`:
 
-## GUI controls
+```powershell
+uv run idle type --gui        # or: uv run idle typing --gui
+uv run idle drill --gui
+uv run idle lc --gui          # or: uv run idle leetcode --gui
+uv run idle stats --gui
+uv run idle config --gui
+```
+
+### Terminal / CLI Mode
+
+Launch interactive terminal menu:
+
+```powershell
+uv run idle --cli
+```
+
+Run CLI commands directly:
+
+```powershell
+uv run idle type              # or: uv run idle typing
+uv run idle drill
+uv run idle lc list           # or: uv run idle leetcode list
+uv run idle stats
+uv run idle config
+```
+
+## GUI Controls
 
 Keyboard-first. Mouse optional.
 
 | Key | Action |
 | --- | ------ |
-| Esc | back / quit |
-| Tab | restart / confirm |
-| Enter | select / confirm |
-| Arrows | navigate lists and menus |
-| Ctrl+W | delete word |
-| Ctrl+T | test solution |
-| Ctrl+S | submit solution |
-| Ctrl+O | open in browser |
+| Esc | Back / quit |
+| Ctrl+C | Return to menu (from subscreen) / Exit program (from menu) |
+| Tab | Restart session (typing/drill) / Confirm |
+| Enter | Select / Confirm |
+| Arrows | Navigate lists and menus |
+| Ctrl+W | Delete word |
+| Ctrl+T | Test LeetCode solution |
+| Ctrl+S | Submit LeetCode solution |
+| Ctrl+O | Open in browser |
 
-Dev:
+## Developer Commands
 
 ```powershell
 uv run pytest -q
@@ -58,62 +78,66 @@ uv run ruff check
 uv run mypy
 ```
 
-## Usage
+## Usage & CLI Reference
 
 ```text
-idle
-idle type [--time 30|60|120 | --words 25|50|100 | --quote | --code python] [--list 200|1000] [--punct] [--numbers] [--stop-on-error]
-idle drill
-idle lc {login,list,show,pick,daily,start,test,submit,stats,open}
-idle stats [--limit 20]
-idle config [--edit]
+idle [--cli | --gui]
+idle {type,typing} [--time 30|60|120 | --words 25|50|100 | --quote | --code python] [--list 200|1000] [--punct] [--numbers] [--stop-on-error] [--gui]
+idle drill [--gui]
+idle {lc,leetcode} {login,list,show,pick,daily,start,test,submit,stats,open} [--gui]
+idle stats [--limit 20] [--gui]
+idle config [--edit] [--gui]
 ```
 
-Bare `idle` launches the GUI. `idle --cli` shows a numbered menu: `1) type  2) drill  3) leetcode  4) stats  5) quit` with `Best` and `Solved` one-liners. Menu option `1` runs `idle type` with config defaults (`time 60`, `list 200`).
+### Typing Examples
 
-CLI is de-emphasized but unchanged. Use GUI for practice. Use CLI for scripting.
+```powershell
+# Terminal mode
+uv run idle type
+uv run idle type --time 30
+uv run idle type --words 50 --list 1000 --punct --numbers --stop-on-error
+uv run idle type --quote
+uv run idle type --code python
+uv run idle drill
+uv run idle stats --limit 20
 
-Typing:
-
-```bash
-idle type
-idle type --time 30
-idle type --words 50 --list 1000 --punct --numbers --stop-on-error
-idle type --quote
-idle type --code python
-idle drill
-idle stats --limit 20
+# Directly in GUI
+uv run idle type --gui
+uv run idle drill --gui
+uv run idle stats --gui
 ```
 
-LeetCode:
+### LeetCode Examples
 
-```bash
-idle lc login
-idle lc list -n 20
-idle lc list --difficulty e --tag array --status todo --refresh
-idle lc show 1
-idle lc pick --difficulty e
-idle lc daily
-idle lc start two-sum
-idle lc test
-idle lc test two-sum
-idle lc submit
-idle lc submit two-sum
-idle lc stats
-idle lc open two-sum
+```powershell
+uv run idle lc login
+uv run idle lc list -n 20
+uv run idle lc list --difficulty e --tag array --status todo --refresh
+uv run idle lc show 1
+uv run idle lc pick --difficulty e
+uv run idle lc daily
+uv run idle lc start two-sum
+uv run idle lc test
+uv run idle lc test two-sum
+uv run idle lc submit
+uv run idle lc submit two-sum
+uv run idle lc stats
+uv run idle lc open two-sum
+
+# Directly in GUI
+uv run idle lc --gui
 ```
 
 ## Login
 
 1. Log in to leetcode.com in a browser.
 2. Copy `LEETCODE_SESSION` and `csrftoken` cookies.
-3. Run `idle lc login` and paste each value.
-4. Credentials save to `auth.json` with `0600` on POSIX.
+3. Run `uv run idle lc login` and paste each value.
+4. Credentials save to `auth.json` with `0600` permissions on POSIX.
 
-Cookies are never logged. On expiry run `idle lc login` again.
+Cookies are never logged. On expiry run `uv run idle lc login` again.
 
-
-## Graceful failures
+## Graceful Failures
 
 No traceback for expected cases:
 

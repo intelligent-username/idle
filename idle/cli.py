@@ -6,8 +6,9 @@ import argparse
 from typing import Any
 
 
-def _add_type_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_type = sub.add_parser("type", help="typing practice")
+def _add_type_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+    parents = [parent] if parent else []
+    p_type = sub.add_parser("type", aliases=["typing"], parents=parents, help="typing practice")
     mode = p_type.add_mutually_exclusive_group()
     mode.add_argument("--time", type=int, choices=[30, 60, 120], default=None)
     mode.add_argument("--words", type=int, choices=[25, 50, 100], default=None)
@@ -19,8 +20,9 @@ def _add_type_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -
     p_type.add_argument("--stop-on-error", dest="stop_on_error", action="store_true")
 
 
-def _add_lc_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_lc = sub.add_parser("lc", help="leetcode practice")
+def _add_lc_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+    parents = [parent] if parent else []
+    p_lc = sub.add_parser("lc", aliases=["leetcode"], parents=parents, help="leetcode practice")
     lc_sub = p_lc.add_subparsers(dest="lc_command")
     lc_sub.add_parser("login", help="login with browser cookies")
     p_list = lc_sub.add_parser("list", help="list problems")
@@ -46,35 +48,42 @@ def _add_lc_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
     p_open.add_argument("id_or_slug", type=str)
 
 
-def _add_stats_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_stats = sub.add_parser("stats", help="show typing history")
+def _add_stats_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+    parents = [parent] if parent else []
+    p_stats = sub.add_parser("stats", parents=parents, help="show typing history")
     p_stats.add_argument("--limit", type=int, default=20)
 
 
-def _add_gui_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_gui_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
     """Add gui subcommand for default launch."""
-    sub.add_parser("gui", help="launch pygame GUI (default)")
+    parents = [parent] if parent else []
+    sub.add_parser("gui", parents=parents, help="launch pygame GUI (default)")
 
 
-def _add_config_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_config = sub.add_parser("config", help="show config")
+def _add_config_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+    parents = [parent] if parent else []
+    p_config = sub.add_parser("config", parents=parents, help="show config")
     p_config.add_argument("--edit", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build exact CLI tree for idle."""
+    gui_parent = argparse.ArgumentParser(add_help=False)
+    gui_parent.add_argument("--gui", action="store_true", help="run in GUI mode and open screen directly")
+
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="idle",
         description="Terminal typing + LeetCode toolkit",
+        parents=[gui_parent],
     )
     parser.add_argument("--cli", action="store_true", help="use terminal menu instead of GUI")
     sub = parser.add_subparsers(dest="command")
-    _add_type_parser(sub)
-    sub.add_parser("drill", help="adaptive drill")
-    _add_lc_parser(sub)
-    _add_stats_parser(sub)
-    _add_config_parser(sub)
-    _add_gui_parser(sub)
+    _add_type_parser(sub, gui_parent)
+    sub.add_parser("drill", parents=[gui_parent], help="adaptive drill")
+    _add_lc_parser(sub, gui_parent)
+    _add_stats_parser(sub, gui_parent)
+    _add_config_parser(sub, gui_parent)
+    _add_gui_parser(sub, gui_parent)
     return parser
 
 
@@ -484,6 +493,13 @@ def main(argv: list[str] | None = None) -> int:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args(argv)
     try:
+        if bool(getattr(args, "gui", False)) and args.command not in (None, "gui"):
+            try:
+                from idle.gui.app import run_gui
+                return run_gui(argv, initial_screen=args.command)
+            except ImportError:
+                print("pygame missing. Run: uv sync")
+                return 2
         if bool(getattr(args, "cli", False)) and args.command in (None, "gui"):
             run_menu()
             return 0
@@ -494,11 +510,11 @@ def main(argv: list[str] | None = None) -> int:
             except ImportError:
                 print("pygame missing. Run: uv sync")
                 return 2
-        elif args.command == "type":
+        elif args.command in ("type", "typing"):
             _cmd_type(args)
         elif args.command == "drill":
             _cmd_drill()
-        elif args.command == "lc":
+        elif args.command in ("lc", "leetcode"):
             _cmd_lc(args)
         elif args.command == "stats":
             cmd_stats(getattr(args, "limit", 20))

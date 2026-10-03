@@ -500,7 +500,7 @@ def test_format_results_headline() -> None:
     lines: list[str] = format_results(_sample_result(), 50.0, 60.0)
     assert lines[0].startswith("Net WPM")
     assert any(line.startswith("Best: 50.0") for line in lines)
-    assert any(line.startswith("7-day: 60.0") for line in lines)
+    assert any(line.startswith("7-Day Avg: 60.0") for line in lines)
 
 
 def test_show_results_matches_format(capsys: Any) -> None:
@@ -690,3 +690,51 @@ def test_no_leetcode_cli_fallback() -> None:
     assert hasattr(lc_api, "leetcode_cli_fallback") is False
     with pytest.raises(ImportError):
         from idle.lc.api import leetcode_cli_fallback  # type: ignore[attr-defined] # noqa: F401
+
+
+def test_ctrl_c_navigates_to_menu_then_quits() -> None:
+    """Ctrl+C in a subscreen returns to menu, and on menu exits."""
+    _ensure_pygame()
+    rt: gui_app._Runtime = gui_app._new_runtime()
+    rt.state.push(Screen.TYPE)
+    assert rt.state.screen == Screen.TYPE
+
+    ctrl_c_event: Any = _keydown(pygame.K_c, pygame.KMOD_CTRL)
+    quit_flag: bool = gui_app._handle_current(ctrl_c_event, rt)
+    assert quit_flag is False
+    assert rt.state.screen == Screen.MENU
+
+    quit_flag_2: bool = gui_app._handle_current(ctrl_c_event, rt)
+    assert quit_flag_2 is True
+
+
+def test_menu_shortcut_does_not_leak_textinput() -> None:
+    """Pressing 1 to enter typing creates session with 0 typed chars."""
+    _ensure_pygame()
+    rt: gui_app._Runtime = gui_app._new_runtime()
+    assert rt.state.screen == Screen.MENU
+
+    key_1: Any = _keydown(pygame.K_1)
+    gui_app._handle_current(key_1, rt)
+    assert rt.state.screen == Screen.TYPE
+    assert rt.typing is not None
+    assert len(rt.typing.typed) == 0
+
+
+def test_gui_initial_screen_navigation() -> None:
+    """_goto opens requested initial screens correctly."""
+    _ensure_pygame()
+    rt: gui_app._Runtime = gui_app._new_runtime()
+    gui_app._goto(rt, Screen.TYPE)
+    assert rt.state.screen == Screen.TYPE
+    assert rt.typing is not None
+
+    rt_drill: gui_app._Runtime = gui_app._new_runtime()
+    gui_app._goto(rt_drill, Screen.DRILL)
+    assert rt_drill.state.screen == Screen.DRILL
+    assert rt_drill.drill is not None
+
+    rt_stats: gui_app._Runtime = gui_app._new_runtime()
+    gui_app._goto(rt_stats, Screen.STATS)
+    assert rt_stats.state.screen == Screen.STATS
+    assert rt_stats.stats_data is not None

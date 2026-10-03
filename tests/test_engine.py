@@ -62,6 +62,11 @@ def test_consistency_varied() -> None:
     assert 0.0 < value < 1.0
 
 
+def test_consistency_floored_at_zero() -> None:
+    value: float = calc_consistency([1000.0, 10.0, 10.0])
+    assert value == 0.0
+
+
 def test_update_stats_counts() -> None:
     per_key: dict[str, dict[str, float]] = {}
     per_bigram: dict[str, dict[str, float]] = {}

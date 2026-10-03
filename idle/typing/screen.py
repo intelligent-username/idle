@@ -12,7 +12,7 @@ from idle.typing.engine import update_stats
 
 MIN_H = 10
 MIN_W = 40
-SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+SPARK_BLOCKS = "._-~*^#"
 QUIT_KEY = 27
 WORD_DELETE_KEY = 23
 RESTART_KEYS = (9, 10)
@@ -41,7 +41,7 @@ def _is_time_mode(opts: dict[str, Any]) -> bool:
 def _sparkline(values: list[float]) -> str:
     """Map values to block chars normalized by min-max.
 
-    Test: _sparkline([0.0, 50.0, 100.0]) == "▁▅█".
+    Test: _sparkline([0.0, 50.0, 100.0]) == "._#".
     """
     if not values:
         return ""
@@ -75,13 +75,15 @@ def _miss_rate(entry: dict[str, float]) -> float:
 
 def _slowest(per_key: dict[str, dict[str, float]], n: int = 5) -> list[tuple[str, float]]:
     """Return top-n chars by average latency."""
-    ranked = sorted(per_key.items(), key=lambda kv: _avg_lat(kv[1]), reverse=True)
+    with_attempts = {k: v for k, v in per_key.items() if float(v.get("attempts", 0.0)) > 0}
+    ranked = sorted(with_attempts.items(), key=lambda kv: _avg_lat(kv[1]), reverse=True)
     return [(k, _avg_lat(v)) for k, v in ranked[:n]]
 
 
 def _most_missed(per_key: dict[str, dict[str, float]], n: int = 5) -> list[tuple[str, float]]:
-    """Return top-n chars by miss rate."""
-    ranked = sorted(per_key.items(), key=lambda kv: _miss_rate(kv[1]), reverse=True)
+    """Return top-n chars by miss rate for keys that had misses."""
+    with_misses = {k: v for k, v in per_key.items() if float(v.get("misses", 0.0)) > 0}
+    ranked = sorted(with_misses.items(), key=lambda kv: _miss_rate(kv[1]), reverse=True)
     return [(k, _miss_rate(v)) for k, v in ranked[:n]]
 
 
@@ -117,7 +119,7 @@ def _elapsed(state: dict[str, Any], now: float) -> float:
 def _sample_spark(state: dict[str, Any], net: float, elapsed: float) -> None:
     """Append net WPM once per elapsed second."""
     sec = int(elapsed)
-    if sec > int(state["spark_sec"]):
+    if sec >= 1 and sec > int(state["spark_sec"]):
         state["spark_sec"] = sec
         state["spark"].append(net)
 
@@ -516,7 +518,7 @@ def format_results(
     resolved_best = _resolve_best(result, best)
     resolved_avg = _resolve_avg(result, seven_day_avg)
     lines.append(f"Best: {resolved_best:.1f} WPM" if resolved_best is not None else "Best: --")
-    lines.append(f"7-day: {resolved_avg:.1f} WPM" if resolved_avg is not None else "7-day: --")
+    lines.append(f"7-Day Avg: {resolved_avg:.1f} WPM" if resolved_avg is not None else "7-Day Avg: --")
     return lines
 
 

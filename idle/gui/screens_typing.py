@@ -231,7 +231,7 @@ def sample_spark(session: TypingSession, now: float) -> None:
     """Append net WPM once per elapsed second."""
     elapsed: float = session_elapsed(session, now)
     sec: int = int(elapsed)
-    if sec > session.spark_sec:
+    if sec >= 1 and sec > session.spark_sec:
         session.spark_sec = sec
         session.spark.append(session_net_wpm(session, now))
 

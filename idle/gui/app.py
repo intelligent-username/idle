@@ -201,6 +201,16 @@ def _go_back(rt: _Runtime) -> None:
         rt.menu_header = _menu_header(rt.state.db_path)
 
 
+def _go_menu(rt: _Runtime) -> None:
+    """Clear screen stack, reset session state, and return to menu."""
+    rt.show_login = False
+    rt.state.stack.clear()
+    rt.state.screen = Screen.MENU
+    rt.typing = None
+    rt.drill = None
+    rt.menu_header = _menu_header(rt.state.db_path)
+
+
 def _open_selected(rt: _Runtime) -> None:
     """Open selected LC row in detail view."""
     from idle.gui import screens_lc
@@ -502,6 +512,16 @@ def _handle_login(event: Any, rt: _Runtime) -> bool:
 
 def _handle_current(event: Any, rt: _Runtime) -> bool:
     """Route event to active screen. Return True to quit."""
+    import pygame
+
+    if int(getattr(event, "type", -1)) == pygame.KEYDOWN:
+        key: int = int(getattr(event, "key", 0))
+        mod: int = int(getattr(event, "mod", 0))
+        if key == pygame.K_c and bool(mod & pygame.KMOD_CTRL):
+            if rt.show_login or rt.state.screen != Screen.MENU:
+                _go_menu(rt)
+                return False
+            return True
     if rt.show_login:
         return _handle_login(event, rt)
     screen: Screen = rt.state.screen
@@ -514,7 +534,10 @@ def _handle_current(event: Any, rt: _Runtime) -> bool:
     return _handle_info(event, rt)
 
 
-def run_gui(argv: list[str] | None = None) -> int:
+def run_gui(
+    argv: list[str] | None = None,
+    initial_screen: Screen | str | None = None,
+) -> int:
     """Open 960x640 window and run screen stack loop.
 
     Test: with dummy video and QUIT event, returns 0.
@@ -532,6 +555,21 @@ def run_gui(argv: list[str] | None = None) -> int:
     clock: Any = pygame.time.Clock()
     font: Any = theme.get_font(FONT_SIZE)
     rt: _Runtime = _new_runtime()
+    if isinstance(initial_screen, str):
+        mapping: dict[str, Screen] = {
+            "type": Screen.TYPE,
+            "typing": Screen.TYPE,
+            "drill": Screen.DRILL,
+            "lc": Screen.LC_LIST,
+            "leetcode": Screen.LC_LIST,
+            "stats": Screen.STATS,
+            "config": Screen.CONFIG,
+            "menu": Screen.MENU,
+            "gui": Screen.MENU,
+        }
+        initial_screen = mapping.get(initial_screen.lower())
+    if initial_screen is not None and initial_screen != Screen.MENU:
+        _goto(rt, initial_screen)
     running: bool = True
     try:
         while running:
@@ -545,8 +583,15 @@ def run_gui(argv: list[str] | None = None) -> int:
                     h: int = int(getattr(event, "h", theme.LOGICAL_H))
                     surface = pygame.display.set_mode((w, h), pygame.RESIZABLE)
                 elif etype in (pygame.KEYDOWN, pygame.TEXTINPUT):
+                    screen_before = (rt.state.screen, rt.show_login)
                     if _handle_current(event, rt):
                         running = False
+                        break
+                    if (rt.state.screen, rt.show_login) != screen_before:
+                        try:
+                            pygame.event.clear(pygame.TEXTINPUT)
+                        except Exception:
+                            pass
                         break
             _draw_current(surface, font, rt)
             pygame.display.flip()

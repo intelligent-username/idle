@@ -35,14 +35,14 @@ def calc_accuracy(correct: int, total: int) -> float:
 
 
 def calc_consistency(wpm_per_sec: list[float]) -> float:
-    """Return 1 minus variation of per-second WPM."""
+    """Return 1 minus variation of per-second WPM floored at zero."""
     if len(wpm_per_sec) < 2:
         return 1.0
     mean: float = statistics.fmean(wpm_per_sec)
-    if mean == 0:
+    if mean <= 0:
         return 1.0
     spread: float = statistics.stdev(wpm_per_sec)
-    return 1.0 - (spread / mean)
+    return max(0.0, min(1.0, 1.0 - (spread / mean)))
 
 
 def update_stats(
