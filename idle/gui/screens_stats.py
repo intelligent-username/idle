@@ -24,7 +24,9 @@ EMPTY_TYPING_MSG: str = "no sessions yet. Run: type"
 EMPTY_LC_MSG: str = "no leetcode activity yet"
 
 
-def get_recent_sessions(conn: Any, limit: int = 10, offset: int = 0) -> list[Any]:
+def get_recent_sessions(
+    conn: Any, limit: int = 10, offset: int = 0
+) -> list[Any]:
     """Fetch N typing sessions newest first with offset, excluding drills."""
     cur: Any = conn.execute(
         "SELECT id, ts, mode, duration_s, net_wpm, accuracy"
@@ -102,6 +104,7 @@ def load_stats(
         "streak": 0,
         "active": 0,
         "offset": offset,
+        "limit": limit,
         "total": 0,
         "db_path": str(db_path),
     }
@@ -134,8 +137,14 @@ def refresh_recent(data: dict[str, Any], db_path: str | Path) -> None:
     except OSError:
         return
     try:
-        data["total"] = get_total_sessions(conn)
-        data["recent"] = get_recent_sessions(conn, 10, int(data.get("offset", 0)))
+        limit: int = int(data.get("limit", 10))
+        total: int = get_total_sessions(conn)
+        data["total"] = total
+        offset: int = int(data.get("offset", 0))
+        if total > 0 and offset >= total:
+            offset = max(0, ((total - 1) // limit) * limit)
+            data["offset"] = offset
+        data["recent"] = get_recent_sessions(conn, limit, offset)
     finally:
         conn.close()
 
@@ -196,10 +205,30 @@ def handle_stats(
     data: dict[str, Any] | None = None,
     db_path: str | Path = "",
 ) -> bool:
-    """Return True when stats screen should go back; handle Left/Right/A/D/Tab paging."""
+    """Return True when stats screen should go back; handle directional/paging navigation."""
     import pygame
 
-    if int(getattr(event, "type", -1)) != pygame.KEYDOWN:
+    etype: int = int(getattr(event, "type", -1))
+    if etype == getattr(pygame, "MOUSEWHEEL", 1027):
+        if data is not None:
+            y_delta: int = int(getattr(event, "y", 0))
+            path: str = str(db_path or data.get("db_path", ""))
+            offset: int = int(data.get("offset", 0))
+            total: int = int(data.get("total", 0))
+            limit: int = int(data.get("limit", 10))
+            if y_delta < 0:
+                if offset + limit < total:
+                    data["offset"] = offset + limit
+                    if path:
+                        refresh_recent(data, path)
+            elif y_delta > 0:
+                if offset > 0:
+                    data["offset"] = max(0, offset - limit)
+                    if path:
+                        refresh_recent(data, path)
+        return False
+
+    if etype != pygame.KEYDOWN:
         return False
     key: int = int(getattr(event, "key", 0))
     mod: int = int(getattr(event, "mod", 0))
@@ -210,19 +239,40 @@ def handle_stats(
         path = str(db_path or data.get("db_path", ""))
         offset = int(data.get("offset", 0))
         total = int(data.get("total", 0))
+        limit = int(data.get("limit", 10))
 
-        # Backward 10 entries: Left arrow, 'a', or Shift+Tab
-        if key in (pygame.K_LEFT, pygame.K_a) or (key == pygame.K_TAB and bool(mod & pygame.KMOD_SHIFT)):
+        # Backward / Previous Page: Left, Up, A, W, K, PageUp, Shift+Tab
+        if (
+            key in (
+                pygame.K_LEFT,
+                pygame.K_UP,
+                pygame.K_a,
+                pygame.K_w,
+                pygame.K_k,
+                getattr(pygame, "K_PAGEUP", 280),
+            )
+            or (key == pygame.K_TAB and bool(mod & pygame.KMOD_SHIFT))
+        ):
             if offset > 0:
-                data["offset"] = max(0, offset - 10)
+                data["offset"] = max(0, offset - limit)
                 if path:
                     refresh_recent(data, path)
             return False
 
-        # Forward 10 entries: Right arrow, 'd', or Tab (without Shift)
-        if key in (pygame.K_RIGHT, pygame.K_d, pygame.K_TAB):
-            if total == 0 or offset + 10 < total:
-                data["offset"] = offset + 10
+        # Forward / Next Page: Right, Down, D, S, J, PageDown, Tab
+        if (
+            key in (
+                pygame.K_RIGHT,
+                pygame.K_DOWN,
+                pygame.K_d,
+                pygame.K_s,
+                pygame.K_j,
+                getattr(pygame, "K_PAGEDOWN", 281),
+            )
+            or (key == pygame.K_TAB and not bool(mod & pygame.KMOD_SHIFT))
+        ):
+            if offset + limit < total:
+                data["offset"] = offset + limit
                 if path:
                     refresh_recent(data, path)
             return False
@@ -246,6 +296,8 @@ def _stat_lines(data: dict[str, Any]) -> list[str]:
     recent: Any = data.get("recent", [])
     total: int = int(data.get("total", len(recent)))
     offset: int = int(data.get("offset", 0))
+    limit: int = int(data.get("limit", 10))
+
     if not recent and total == 0:
         lines.append(EMPTY_TYPING_MSG)
     else:
@@ -253,10 +305,11 @@ def _stat_lines(data: dict[str, Any]) -> list[str]:
         if total > 0:
             start_num = offset + 1
             end_num = min(offset + len(recent), total)
-            page_suffix = f" ({start_num}-{end_num} of {total}) [Left/Right or A/D]"
+            nav_hint = " [Left/Right or A/D]" if total > limit else ""
+            page_suffix = f" ({start_num}-{end_num} of {total}){nav_hint}"
         lines.append(f"recent typing tests{page_suffix}:")
         lines.append(f"{'id':>5}  {'mode':<6}  {'net':>6}  {'acc':>6}")
-        for row in recent[:10]:
+        for row in recent[:limit]:
             lines.append(_format_session(row))
     lines.append("")
     lines.extend(_lc_lines(data))

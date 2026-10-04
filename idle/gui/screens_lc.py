@@ -717,7 +717,7 @@ def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
 
     surface.fill(theme_mod.BG)
     w: int = surface.get_width()
-    _draw_bar(surface, font, "Login | Tab switch Enter save Esc back", 8)
+    _draw_bar(surface, font, "Login | Tab switch Ctrl+V paste Ctrl+C copy Enter save Esc back", 8)
     labels: list[str] = ["username", "password"]
     boxes: list[Textbox] = [view.username_box, view.password_box]
     for idx in range(2):
@@ -729,6 +729,9 @@ def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
         pygame.draw.rect(surface, color, area, 2 if view.focus == idx else 1)
         img = font.render(shown[-60:], True, theme_mod.FG)
         surface.blit(img, (18, y + 30))
+        if view.focus == idx and boxes[idx].blink_on:
+            caret_x: int = 18 + font.size(shown[-60:])[0]
+            pygame.draw.line(surface, theme_mod.FG, (caret_x, y + 28), (caret_x, y + 28 + font.get_linesize()), 1)
     _draw_bar(surface, font, view.message[:120] if view.message else "", 240)
 
 

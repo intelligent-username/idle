@@ -657,22 +657,24 @@ def _handle_current(event: Any, rt: _Runtime) -> bool:
     """Route event to active screen. Return True to quit."""
     import pygame
 
+    if rt.show_login:
+        return _handle_login(event, rt)
+    if rt.state.screen == Screen.LC_SOLVE:
+        return _handle_lc(event, rt)
     if int(getattr(event, "type", -1)) == pygame.KEYDOWN:
         key: int = int(getattr(event, "key", 0))
         mod: int = int(getattr(event, "mod", 0))
         if key == pygame.K_c and bool(mod & pygame.KMOD_CTRL):
-            if rt.show_login or rt.state.screen != Screen.MENU:
+            if rt.state.screen != Screen.MENU:
                 _go_menu(rt)
                 return False
             return True
-    if rt.show_login:
-        return _handle_login(event, rt)
     screen: Screen = rt.state.screen
     if screen == Screen.MENU:
         return _handle_menu(event, rt)
     if screen in (Screen.TYPE, Screen.DRILL):
         return _handle_session(event, rt)
-    if screen in (Screen.LC_LIST, Screen.LC_DETAIL, Screen.LC_SOLVE):
+    if screen in (Screen.LC_LIST, Screen.LC_DETAIL):
         return _handle_lc(event, rt)
     return _handle_info(event, rt)
 
@@ -734,7 +736,7 @@ def run_gui(
                         pygame.key.start_text_input()
                     except Exception:
                         pass
-                elif etype in (pygame.KEYDOWN, pygame.TEXTINPUT):
+                elif etype in (pygame.KEYDOWN, pygame.TEXTINPUT, getattr(pygame, "MOUSEWHEEL", 1027)):
                     screen_before = (rt.state.screen, rt.show_login)
                     if _handle_current(event, rt):
                         running = False

@@ -4,10 +4,147 @@ from typing import Any
 
 from idle.gui import theme
 
-__all__: list[str] = ["Textbox", "ScrollableList", "Button"]
+__all__: list[str] = ["Textbox", "ScrollableList", "Button", "get_clipboard", "set_clipboard"]
 
 BLINK_PERIOD_MS: int = 530
 PAD: int = 6
+
+
+def get_clipboard() -> str:
+    """Retrieve text from system clipboard with multi-backend fallback."""
+    try:
+        import pygame
+        import pygame.scrap
+
+        if not pygame.scrap.get_init():
+            try:
+                pygame.scrap.init()
+            except Exception:
+                pass
+        if pygame.scrap.get_init():
+            if hasattr(pygame.scrap, "get_text"):
+                val = pygame.scrap.get_text()
+                if val:
+                    return str(val)
+            if hasattr(pygame.scrap, "get"):
+                raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+                if raw:
+                    if isinstance(raw, bytes):
+                        return raw.decode("utf-8", errors="replace").rstrip("\x00")
+                    return str(raw).rstrip("\x00")
+    except Exception:
+        pass
+
+    import sys
+
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            cf_unicodetext: int = 13
+
+            if user32.OpenClipboard(None):
+                try:
+                    handle = user32.GetClipboardData(cf_unicodetext)
+                    if handle:
+                        ptr = kernel32.GlobalLock(handle)
+                        if ptr:
+                            try:
+                                text = ctypes.c_wchar_p(ptr).value
+                                if text is not None:
+                                    return text
+                            finally:
+                                kernel32.GlobalUnlock(handle)
+                finally:
+                    user32.CloseClipboard()
+        except Exception:
+            pass
+
+    try:
+        import tkinter
+
+        tk = tkinter.Tk()
+        tk.withdraw()
+        try:
+            text_val = tk.clipboard_get()
+            if text_val:
+                return str(text_val)
+        finally:
+            tk.destroy()
+    except Exception:
+        pass
+
+    return ""
+
+
+def set_clipboard(text: str) -> None:
+    """Copy text to system clipboard with multi-backend fallback."""
+    if not isinstance(text, str):
+        text = str(text)
+
+    try:
+        import pygame
+        import pygame.scrap
+
+        if not pygame.scrap.get_init():
+            try:
+                pygame.scrap.init()
+            except Exception:
+                pass
+        if pygame.scrap.get_init():
+            if hasattr(pygame.scrap, "put_text"):
+                pygame.scrap.put_text(text)
+                return
+            if hasattr(pygame.scrap, "put"):
+                pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
+                return
+    except Exception:
+        pass
+
+    import sys
+
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            cf_unicodetext_val: int = 13
+            gmem_moveable: int = 0x0002
+
+            if user32.OpenClipboard(None):
+                try:
+                    user32.EmptyClipboard()
+                    encoded: bytes = (text + "\x00").encode("utf-16le")
+                    h_mem = kernel32.GlobalAlloc(gmem_moveable, len(encoded))
+                    if h_mem:
+                        ptr = kernel32.GlobalLock(h_mem)
+                        if ptr:
+                            ctypes.memmove(ptr, encoded, len(encoded))
+                            kernel32.GlobalUnlock(h_mem)
+                            user32.SetClipboardData(cf_unicodetext_val, h_mem)
+                            return
+                finally:
+                    user32.CloseClipboard()
+        except Exception:
+            pass
+
+    try:
+        import tkinter
+
+        tk = tkinter.Tk()
+        tk.withdraw()
+        try:
+            tk.clipboard_clear()
+            tk.clipboard_append(text)
+            tk.update()
+            return
+        finally:
+            tk.destroy()
+    except Exception:
+        pass
 
 
 class Textbox:
@@ -92,18 +229,57 @@ class Textbox:
         return len(self.text) if idx == -1 else idx
 
     def handle_key(self, event: Any) -> None:
-        """Handle TEXTINPUT, BACKSPACE, Ctrl+W, RETURN, arrows."""
+        """Handle TEXTINPUT, BACKSPACE, Ctrl+W, Ctrl+V, Ctrl+C, RETURN, arrows."""
         import pygame
 
         etype: int = int(getattr(event, "type", -1))
         if etype == pygame.TEXTINPUT:
-            self._insert(str(getattr(event, "text", "")))
+            raw_text: str = str(getattr(event, "text", ""))
+            clean_chars: list[str] = [
+                c for c in raw_text
+                if c >= " " or (self.multiline and c in ("\n", "\t"))
+            ]
+            if clean_chars:
+                self._insert("".join(clean_chars))
             return
         if etype != pygame.KEYDOWN:
             return
         key: int = int(getattr(event, "key", 0))
         mod: int = int(getattr(event, "mod", 0))
-        ctrl: bool = bool(mod & pygame.KMOD_CTRL)
+        ctrl: bool = bool(mod & (pygame.KMOD_CTRL | getattr(pygame, "KMOD_META", 0) | getattr(pygame, "KMOD_GUI", 0)))
+        shift: bool = bool(mod & pygame.KMOD_SHIFT)
+
+        if (ctrl and key == pygame.K_v) or (shift and key == getattr(pygame, "K_INSERT", 0)):
+            clip: str = get_clipboard()
+            if clip:
+                if not self.multiline:
+                    clip = clip.replace("\r\n", "").replace("\r", "").replace("\n", "")
+                self._insert(clip)
+            return
+        if ctrl and key == pygame.K_c:
+            if self.text:
+                set_clipboard(self.text)
+            return
+        if ctrl and key == pygame.K_x:
+            if self.text:
+                set_clipboard(self.text)
+                self.text = ""
+                self.caret = 0
+                self._reset_blink()
+            return
+        if ctrl and key == pygame.K_a:
+            self.caret = len(self.text)
+            self._reset_blink()
+            return
+        if ctrl and key == pygame.K_u:
+            self.text = self.text[self.caret :]
+            self.caret = 0
+            self._reset_blink()
+            return
+        if ctrl and key == pygame.K_k:
+            self.text = self.text[: self.caret]
+            self._reset_blink()
+            return
         if ctrl and key == pygame.K_w:
             self._delete_word()
             return
