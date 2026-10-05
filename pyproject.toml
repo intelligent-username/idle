@@ -22,3 +22,6 @@ include = ["idle*"]
 
 [tool.setuptools.package-data]
 idle = ["data/*.txt", "data/snippets/*.txt"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

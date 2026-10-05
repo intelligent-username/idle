@@ -5,3 +5,5 @@ config.toml
 auth.json
 .venv/
 **-info
+
+.env

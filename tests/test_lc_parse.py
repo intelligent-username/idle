@@ -168,6 +168,24 @@ class _FakeOpener:
         return _FakeLoginResp(self._pages[idx])
 
 
+class _StepOpener:
+    """Opener returning pages or raising errors in order."""
+
+    def __init__(self, steps: list[object]) -> None:
+        """Store steps of text or exception."""
+        self._steps: list[object] = steps
+        self.calls: int = 0
+
+    def open(self, req: object, timeout: float = 10) -> _FakeLoginResp:
+        """Return next page or raise next error."""
+        idx: int = min(self.calls, len(self._steps) - 1)
+        self.calls += 1
+        step: object = self._steps[idx]
+        if isinstance(step, Exception):
+            raise step
+        return _FakeLoginResp(str(step))
+
+
 def test_fetch_problem_list_parses_fixture(
     _tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -457,6 +475,140 @@ def test_login_empty_credentials_no_network(
     assert len(calls) == 0
 
 
+def test_login_fetch_challenge_not_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 403 with challenge body maps to challenge."""
+    import http.cookiejar
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    body: bytes = b"<html>captcha verify you are human</html>"
+    exc = urllib.error.HTTPError(
+        "https://leetcode.com/accounts/login/",
+        403,
+        "Forbidden",
+        Message(),
+        io.BytesIO(body),
+    )
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: [])
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *a: _StepOpener([exc])
+    )
+    with pytest.raises(RuntimeError) as err:
+        auth.login_username_password("user", "pass")
+    text: str = str(err.value).lower()
+    assert "challenge" in text
+    assert "offline" not in text
+
+
+def test_login_fetch_http_403_without_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 403 without challenge maps to HTTP error."""
+    import http.cookiejar
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    body: bytes = b"<html>forbidden</html>"
+    exc = urllib.error.HTTPError(
+        "https://leetcode.com/accounts/login/",
+        403,
+        "Forbidden",
+        Message(),
+        io.BytesIO(body),
+    )
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: [])
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *a: _StepOpener([exc])
+    )
+    with pytest.raises(RuntimeError) as err:
+        auth.login_username_password("user", "pass")
+    text: str = str(err.value)
+    assert "login failed: HTTP 403" in text
+    assert "offline" not in text.lower()
+
+
+def test_login_fetch_urlerror_maps_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """URLError maps to offline string."""
+    import http.cookiejar
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: [])
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *a: _StepOpener([urllib.error.URLError("dns fail")]),
+    )
+    with pytest.raises(RuntimeError) as err:
+        auth.login_username_password("user", "pass")
+    assert "offline" in str(err.value).lower()
+
+
+def test_login_fetch_timeout_maps_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timeout maps to offline string."""
+    import http.cookiejar
+    import urllib.request
+
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: [])
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *a: _StepOpener([TimeoutError("timed out")]),
+    )
+    with pytest.raises(RuntimeError) as err:
+        auth.login_username_password("user", "pass")
+    assert "offline" in str(err.value).lower()
+
+
+def test_login_token_missing_page_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTML without token maps to page-changed message."""
+    import http.cookiejar
+    import urllib.request
+
+    monkeypatch.setattr(http.cookiejar, "CookieJar", lambda: [])
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *a: _FakeOpener(["<html>no token here</html>"]),
+    )
+    with pytest.raises(RuntimeError) as err:
+        auth.login_username_password("user", "pass")
+    text: str = str(err.value)
+    assert "could not find login token" in text
+    assert "offline" not in text.lower()
+
+
+def test_load_saved_credentials_from_env(_tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading LC_USERNAME and LC_PW from .env file or environment."""
+    env_file = _tmp_home / ".env"
+    env_file.write_text("LC_USERNAME=TestUser\nLC_PW=TestPass420\n", encoding="utf-8")
+    user, pw = auth.load_saved_credentials()
+    assert user == "TestUser"
+    assert pw == "TestPass420"
+
+
+def test_save_and_load_auth_with_credentials(_tmp_home: Path) -> None:
+    """Saving cookies along with username and password round-trips via load_saved_credentials."""
+    cookies = {"LEETCODE_SESSION": "sess-xyz", "csrftoken": "csrf-abc"}
+    auth.save_auth(cookies, username="Alice", password="SecretPassword")
+    assert auth.load_auth() == cookies
+    user, pw = auth.load_saved_credentials()
+    assert user == "Alice"
+    assert pw == "SecretPassword"
+
+
 def test_run_local_zero_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -500,3 +652,61 @@ def test_no_leetcode_cli_fallback() -> None:
     assert hasattr(lc_api, "leetcode_cli_fallback") is False
     with pytest.raises(ImportError):
         from idle.lc.api import leetcode_cli_fallback  # type: ignore[attr-defined] # noqa: F401
+
+
+def test_validate_session_cookies_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validator returns True on signed-in payload."""
+    payload: dict[str, Any] = {
+        "data": {"userStatus": {"username": "dummy", "isSignedIn": True}}
+    }
+    _mock_urlopen(monkeypatch, [payload])
+    ok, msg = auth.validate_session_cookies(
+        {"LEETCODE_SESSION": "sess123", "csrftoken": "csrf123"}
+    )
+    assert (ok, msg) == (True, "")
+
+
+def test_validate_session_cookies_expired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTPError 403 maps to expired message."""
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    def _fake(req: object, timeout: float = 10) -> _FakeResp:
+        raise urllib.error.HTTPError(
+            "https://leetcode.com/graphql",
+            403,
+            "Forbidden",
+            Message(),
+            io.BytesIO(b"forbidden"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake)
+    ok, msg = auth.validate_session_cookies(
+        {"LEETCODE_SESSION": "sess123", "csrftoken": "csrf123"}
+    )
+    assert ok is False
+    assert msg == "Session expired. Run: idle lc login"
+
+
+def test_validate_session_cookies_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """URLError maps to offline string."""
+    import urllib.error
+    import urllib.request
+
+    def _fake(req: object, timeout: float = 10) -> _FakeResp:
+        raise urllib.error.URLError("dns fail")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake)
+    ok, msg = auth.validate_session_cookies(
+        {"LEETCODE_SESSION": "sess123", "csrftoken": "csrf123"}
+    )
+    assert ok is False
+    assert "offline" in msg.lower()

@@ -418,12 +418,214 @@ def test_lc_login_empty_and_save() -> None:
     msg: str
     ok, msg = screens_lc.try_save_login("", "")
     assert ok is False
-    with patch("idle.lc.auth.save_auth") as saved:
+    with (
+        patch(
+            "idle.lc.auth.validate_session_cookies",
+            return_value=(True, ""),
+        ),
+        patch("idle.lc.auth.save_auth") as saved,
+    ):
         ok, msg = screens_lc.try_save_login("dummy-session", "dummy-csrf")
     assert ok is True
     assert msg == "saved login"
     assert saved.call_count == 1
     assert "dummy-session" not in msg
+
+
+def test_try_login_password_passthrough_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each taxonomy message passes verbatim, no offline remap."""
+    import idle.lc.auth as auth_mod
+
+    msgs: list[str] = [
+        "could not login (offline?). Check network and retry.",
+        "login failed: HTTP 403 from LeetCode (retry later).",
+        "LeetCode challenge detected (captcha/cloudflare). Retry later.",
+        "login failed: could not find login token (page changed?)",
+        "login failed: bad credentials or captcha",
+    ]
+    monkeypatch.setattr(auth_mod, "save_auth", lambda *a, **k: None)
+    for msg in msgs:
+        def _raise(u: str, p: str, _m: str = msg) -> dict[str, str]:
+            raise RuntimeError(_m)
+
+        monkeypatch.setattr(auth_mod, "login_username_password", _raise)
+        ok, out = screens_lc.try_login_password("u", "p")
+        assert ok is False
+        assert out == msg
+
+
+def test_try_login_password_empty_maps_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty exception message falls back to offline text."""
+    import idle.lc.auth as auth_mod
+
+    def _raise_empty(u: str, p: str) -> dict[str, str]:
+        raise RuntimeError("")
+
+    monkeypatch.setattr(auth_mod, "login_username_password", _raise_empty)
+    monkeypatch.setattr(auth_mod, "save_auth", lambda *a, **k: None)
+    ok, msg = screens_lc.try_login_password("u", "p")
+    assert ok is False
+    assert msg == "could not login (offline?). Check network and retry."
+
+
+def test_network_message_preserves_taxonomy() -> None:
+    """Taxonomy preserved, generic and empty map to offline."""
+    keep: list[str] = [
+        "login failed: bad credentials or captcha",
+        "login failed: HTTP 403 from LeetCode (retry later).",
+        "login failed: could not find login token (page changed?)",
+        "LeetCode challenge detected (captcha/cloudflare). Retry later.",
+    ]
+    for msg in keep:
+        assert screens_lc._network_message(RuntimeError(msg), "login") == msg
+    assert screens_lc._network_message(RuntimeError("boom"), "login") == (
+        "could not login (offline?). Check network and retry."
+    )
+    assert screens_lc._network_message(RuntimeError(""), "login") == (
+        "could not login (offline?). Check network and retry."
+    )
+
+
+def test_try_save_login_verified_and_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty, verified save, offline unverified save."""
+    import idle.lc.auth as auth_mod
+
+    ok, msg = screens_lc.try_save_login("", "")
+    assert (ok, msg) == (False, screens_lc.LOGIN_EMPTY_MSG)
+    monkeypatch.setattr(auth_mod, "save_auth", lambda *a, **k: None)
+    monkeypatch.setattr(auth_mod, "validate_session_cookies", lambda c, timeout=10: (True, ""))
+    ok, msg = screens_lc.try_save_login("sess123", "csrf123")
+    assert (ok, msg) == (True, "saved login")
+    assert "sess123" not in msg
+    offline: str = "could not login (offline?). Check network and retry."
+    monkeypatch.setattr(auth_mod, "validate_session_cookies", lambda c, timeout=10: (False, offline))
+    ok, msg = screens_lc.try_save_login("sess123", "")
+    assert (ok, msg) == (True, screens_lc.LOGIN_UNVERIFIED_MSG)
+
+
+def test_handle_lc_login_cookie_mode_calls_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cookie mode Enter routes to try_save_login."""
+    _ensure_pygame()
+    view: screens_lc.LcLoginState = screens_lc.LcLoginState(
+        mode="cookie", focus=1
+    )
+    view.session_box = Textbox(text="sess123")
+    view.csrf_box = Textbox(text="csrf123")
+    seen: dict[str, tuple[str, str]] = {}
+
+    def _fake_save(sess: str, csrf: str) -> tuple[bool, str]:
+        seen["args"] = (sess, csrf)
+        return (True, "saved login")
+
+    def _no_password(u: str, p: str) -> tuple[bool, str]:
+        raise AssertionError("password path must not run in cookie mode")
+
+    monkeypatch.setattr(screens_lc, "try_save_login", _fake_save)
+    monkeypatch.setattr(screens_lc, "try_login_password", _no_password)
+    result = screens_lc.handle_lc_login(_keydown(pygame.K_RETURN), view)
+    assert result == "login_ok"
+    assert seen["args"] == ("sess123", "csrf123")
+    assert view.message == "saved login"
+    assert view.saved is True
+    assert view.session_box.text == ""
+    assert view.csrf_box.text == ""
+
+
+def test_handle_lc_login_password_mode_calls_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Password mode Enter routes to try_login_password."""
+    _ensure_pygame()
+    view: screens_lc.LcLoginState = screens_lc.LcLoginState(
+        mode="password", focus=1
+    )
+    view.username_box = Textbox(text="bob")
+    view.password_box = Textbox(text="pw123")
+    seen: dict[str, tuple[str, str]] = {}
+
+    def _fake_login(u: str, p: str) -> tuple[bool, str]:
+        seen["args"] = (u, p)
+        return (True, "saved login")
+
+    def _no_save(sess: str, csrf: str) -> tuple[bool, str]:
+        raise AssertionError("cookie path must not run in password mode")
+
+    monkeypatch.setattr(screens_lc, "try_login_password", _fake_login)
+    monkeypatch.setattr(screens_lc, "try_save_login", _no_save)
+    result = screens_lc.handle_lc_login(_keydown(pygame.K_RETURN), view)
+    assert result == "login_ok"
+    assert seen["args"] == ("bob", "pw123")
+    assert view.saved is True
+
+
+def test_cmd_lc_catch_all_preserves_taxonomy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """_cmd_lc prints taxonomy verbatim."""
+    import argparse
+
+    from idle import cli
+
+    msgs: list[str] = [
+        "login failed: HTTP 403 from LeetCode (retry later).",
+        "LeetCode challenge detected (captcha/cloudflare). Retry later.",
+        "login failed: bad credentials or captcha",
+        "Session expired. Run: idle lc login",
+        "saved login (unverified, offline?)",
+        "login cancelled: empty session",
+    ]
+    for msg in msgs:
+        def _raise(name: str, args: Any, _m: str = msg) -> None:
+            raise RuntimeError(_m)
+
+        monkeypatch.setattr(cli, "_dispatch_lc", _raise)
+        cli._cmd_lc(argparse.Namespace(lc_command="login"))
+        out: str = capsys.readouterr().out
+        assert msg in out
+        assert "could not complete lc command" not in out
+
+
+def test_cmd_lc_generic_maps_offline(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Generic error maps to offline line."""
+    import argparse
+
+    from idle import cli
+
+    def _raise_generic(name: str, args: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "_dispatch_lc", _raise_generic)
+    cli._cmd_lc(argparse.Namespace(lc_command="list"))
+    out: str = capsys.readouterr().out
+    assert out.strip() == "could not complete lc command (offline?). Check network and retry."
+
+
+def test_make_login_state_autofill() -> None:
+    with patch("idle.lc.auth.load_saved_credentials", return_value=("autouser", "autopass")):
+        view = screens_lc.make_login_state()
+    assert view.username_box.text == "autouser"
+    assert view.password_box.text == "autopass"
+
+
+def test_try_auto_login() -> None:
+    with (
+        patch("idle.lc.auth.load_auth", return_value=None),
+        patch("idle.lc.auth.load_saved_credentials", return_value=("autouser", "autopass")),
+        patch("idle.gui.screens_lc.try_login_password", return_value=(True, "saved login")),
+    ):
+        ok, msg = screens_lc.try_auto_login()
+    assert ok is True
+    assert msg == "saved login"
 
 
 def test_app_stack_esc_back() -> None:

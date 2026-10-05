@@ -69,7 +69,7 @@ def _new_runtime() -> _Runtime:
         menu_header=_menu_header(db_path),
         lc_list=screens_lc.LcListState(),
         lc_detail=screens_lc.LcDetailState(),
-        login=screens_lc.LcLoginState(),
+        login=screens_lc.make_login_state(),
     )
 
 
@@ -229,19 +229,31 @@ def _enter_drill(rt: _Runtime) -> None:
 
 
 def _enter_lc_list(rt: _Runtime) -> None:
-    """Require login first, lazy-load single random after auth."""
+    """Require login first, auto-logging in if credentials available."""
     from idle.gui import screens_lc
 
     if rt.lc_list is None:
         rt.lc_list = screens_lc.LcListState()
     if screens_lc.auth_needed():
-        rt.show_login = True
-        return
+        ok, msg = screens_lc.try_auto_login()
+        if not ok:
+            if msg and msg != "no credentials provided":
+                rt.login.message = msg
+            rt.show_login = True
+            return
+        rt.state.message = "saved login"
     view: Any = rt.lc_list
     if not view.problems and not view.message:
         screens_lc.refresh_problem_list(view)
     if view.needs_login:
-        rt.show_login = True
+        ok, msg = screens_lc.try_auto_login()
+        if ok:
+            view.needs_login = False
+            screens_lc.refresh_problem_list(view)
+        else:
+            if msg and msg != "no credentials provided":
+                rt.login.message = msg
+            rt.show_login = True
 
 
 def _enter_stats(rt: _Runtime) -> None:
@@ -311,16 +323,6 @@ def _discard_session(session: Any, db_path: str) -> None:
         except OSError:
             pass
         session.session_id = None
-
-
-def _discard_current_session(rt: _Runtime) -> None:
-    """Discard typing or drill session without adding to history."""
-    if rt.typing is not None:
-        _discard_session(rt.typing, rt.state.db_path)
-        rt.typing = None
-    if rt.drill is not None:
-        _discard_session(rt.drill, rt.state.db_path)
-        rt.drill = None
 
 
 def _go_menu(rt: _Runtime) -> None:
@@ -465,6 +467,17 @@ def _save_finished(session: Any, db_path: str) -> str:
     finally:
         conn.close()
     return ""
+
+
+def _discard_current_session(rt: _Runtime) -> None:
+    """Discard active session, removing from DB if previously saved."""
+    is_type: bool = rt.state.screen == Screen.TYPE
+    session: Any = rt.typing if is_type else rt.drill
+    _discard_session(session, rt.state.db_path)
+    if is_type:
+        rt.typing = None
+    else:
+        rt.drill = None
 
 
 def _draw_notice(surface: Any, font: Any, rt: _Runtime) -> None:
@@ -636,6 +649,15 @@ def _handle_info(event: Any, rt: _Runtime) -> bool:
 def _handle_login(event: Any, rt: _Runtime) -> bool:
     """Handle username login, lazy-load random on success."""
     from idle.gui import screens_lc
+    from idle.gui.widgets import Textbox
+    from idle.lc.auth import load_saved_credentials
+
+    if not rt.login.username_box.text and not rt.login.password_box.text:
+        user, pw = load_saved_credentials()
+        if user:
+            rt.login.username_box = Textbox(text=user)
+        if pw:
+            rt.login.password_box = Textbox(text=pw)
 
     action: Any = screens_lc.handle_lc_login(event, rt.login)
     if action == "back":

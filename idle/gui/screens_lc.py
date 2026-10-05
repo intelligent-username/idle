@@ -29,6 +29,7 @@ __all__: list[str] = [
     "load_daily",
     "load_detail",
     "load_problem_list",
+    "make_login_state",
     "open_problem",
     "pick_random_problem",
     "refresh_problem_list",
@@ -37,12 +38,14 @@ __all__: list[str] = [
     "run_test_action",
     "scaffold_to_disk",
     "toggle_new_only",
+    "try_auto_login",
     "try_login_password",
     "try_save_login",
     "verdict_summary",
 ]
 
 LOGIN_SAVED_MSG: str = "saved login"
+LOGIN_UNVERIFIED_MSG: str = "saved login (unverified, offline?)"
 LOGIN_EMPTY_MSG: str = "login cancelled: empty session"
 LIMIT_MIN: int = 5
 LIMIT_MAX: int = 200
@@ -106,7 +109,7 @@ class LcSolveState:
 
 @dataclass
 class LcLoginState:
-    """Login form state with username and password."""
+    """Login form state with password or cookie mode."""
 
     session_box: Textbox = field(default_factory=Textbox)
     csrf_box: Textbox = field(default_factory=Textbox)
@@ -115,6 +118,7 @@ class LcLoginState:
     focus: int = 0
     message: str = ""
     saved: bool = False
+    mode: str = "password"
 
 
 def format_problem_row(item: dict[str, Any]) -> str:
@@ -164,11 +168,15 @@ def _offline_text(action: str) -> str:
 
 
 def _network_message(exc: Exception, action: str) -> str:
-    """Return challenge text when detected else offline text."""
+    """Preserve login taxonomy, else offline text."""
     from idle.lc.auth import is_challenge
 
     msg: str = str(exc).strip()
-    if msg and is_challenge(msg):
+    if not msg:
+        return _offline_text(action)
+    if msg.startswith(("login failed:", "LeetCode challenge")) or "HTTP" in msg:
+        return msg
+    if is_challenge(msg):
         return msg
     return _offline_text(action)
 
@@ -559,20 +567,54 @@ def auth_needed() -> bool:
     return load_auth() is None
 
 
+def try_auto_login() -> tuple[bool, str]:
+    """Attempt auto-login using saved credentials or .env if not already authenticated."""
+    from idle.lc.auth import load_auth, load_saved_credentials
+
+    if load_auth() is not None:
+        return True, "already authenticated"
+    user, pw = load_saved_credentials()
+    if not user.strip() or not pw.strip():
+        return False, "no credentials provided"
+    return try_login_password(user, pw)
+
+
 def try_save_login(session: str, csrf: str) -> tuple[bool, str]:
-    """Save login cookies, never echo token values.
+    """Validate cookies then save, never echo values.
 
     Test: empty session returns False with cancel message.
     """
-    from idle.lc.auth import save_auth
+    from idle.lc.auth import save_auth, validate_session_cookies
 
+    offline_msg: str = "could not login (offline?). Check network and retry."
     if not session.strip():
         return False, LOGIN_EMPTY_MSG
     cookies: dict[str, str] = {"LEETCODE_SESSION": session.strip()}
     if csrf.strip():
         cookies["csrftoken"] = csrf.strip()
+    try:
+        ok, reason = validate_session_cookies(cookies)
+    except (OSError, RuntimeError, ValueError):
+        ok, reason = False, offline_msg
     save_auth(cookies)
-    return True, LOGIN_SAVED_MSG
+    if ok:
+        return True, LOGIN_SAVED_MSG
+    if "offline" in reason.lower():
+        return True, LOGIN_UNVERIFIED_MSG
+    return False, reason
+
+
+def make_login_state() -> LcLoginState:
+    """Create login state with autofilled credentials from auth.json or .env."""
+    from idle.lc.auth import load_saved_credentials
+
+    user, pw = load_saved_credentials()
+    state: LcLoginState = LcLoginState()
+    if user:
+        state.username_box = Textbox(text=user)
+    if pw:
+        state.password_box = Textbox(text=pw)
+    return state
 
 
 def try_login_password(username: str, password: str) -> tuple[bool, str]:
@@ -589,7 +631,7 @@ def try_login_password(username: str, password: str) -> tuple[bool, str]:
     except (OSError, RuntimeError) as exc:
         msg: str = str(exc).strip()
         return False, msg if msg else _offline_text("login")
-    save_auth(cookies)
+    save_auth(cookies, username=username, password=password)
     return True, LOGIN_SAVED_MSG
 
 
@@ -710,7 +752,7 @@ def draw_lc_solve(surface: Any, font: Any, view: LcSolveState) -> None:
 
 
 def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
-    """Draw username and password login form."""
+    """Draw password or cookie login form with mode hint."""
     import pygame
 
     from idle.gui import theme as theme_mod
@@ -718,11 +760,22 @@ def draw_lc_login(surface: Any, font: Any, view: LcLoginState) -> None:
     surface.fill(theme_mod.BG)
     w: int = surface.get_width()
     _draw_bar(surface, font, "Login | Tab switch Ctrl+V paste Ctrl+C copy Enter save Esc back", 8)
-    labels: list[str] = ["username", "password"]
-    boxes: list[Textbox] = [view.username_box, view.password_box]
+    cookie: bool = view.mode == "cookie"
+    if cookie:
+        hint: str = "mode: cookie (F2 toggle to password)"
+        labels: list[str] = ["LEETCODE_SESSION", "csrftoken"]
+        boxes: list[Textbox] = [view.session_box, view.csrf_box]
+    else:
+        hint = "mode: password (F2 toggle to cookie)"
+        labels = ["username", "password"]
+        boxes = [view.username_box, view.password_box]
+    _draw_bar(surface, font, hint, 30)
     for idx in range(2):
         y: int = 60 + idx * 80
-        shown: str = boxes[idx].text if idx == 0 else "*" * len(boxes[idx].text)
+        if cookie or idx == 1:
+            shown: str = "*" * len(boxes[idx].text)
+        else:
+            shown = boxes[idx].text
         _draw_bar(surface, font, labels[idx], y)
         area = pygame.Rect(12, y + 22, w - 24, 40)
         color = theme_mod.ACCENT if view.focus == idx else theme_mod.DIM
@@ -889,14 +942,18 @@ def handle_lc_solve(event: Any, view: LcSolveState) -> str | None:
 
 
 def _login_focused(view: LcLoginState) -> Textbox:
-    """Return currently focused username or password box."""
+    """Return focused box for active password or cookie pair."""
+    if view.mode == "cookie":
+        if view.focus == 1:
+            return view.csrf_box
+        return view.session_box
     if view.focus == 1:
         return view.password_box
     return view.username_box
 
 
 def handle_lc_login(event: Any, view: LcLoginState) -> str | None:
-    """Handle login Tab switch, Enter save, Esc back.
+    """Handle login mode toggle, Tab switch, Enter save, Esc back.
 
     Test: empty session keeps form with cancel message.
     """
@@ -906,8 +963,15 @@ def handle_lc_login(event: Any, view: LcLoginState) -> str | None:
         _login_focused(view).handle_key(event)
         return None
     key: int = int(getattr(event, "key", 0))
+    mod: int = int(getattr(event, "mod", 0))
     if key == pygame.K_ESCAPE:
         return "back"
+    if key == pygame.K_F2 or (
+        key == pygame.K_t and bool(mod & pygame.KMOD_CTRL)
+    ):
+        view.mode = "password" if view.mode == "cookie" else "cookie"
+        view.focus = 0 if view.focus not in (0, 1) else view.focus
+        return None
     if key == pygame.K_TAB:
         view.focus = 1 if view.focus == 0 else 0
         return None
@@ -923,9 +987,14 @@ def handle_lc_login(event: Any, view: LcLoginState) -> str | None:
             return None
         ok: bool
         msg: str
-        ok, msg = try_login_password(
-            view.username_box.text, view.password_box.text
-        )
+        if view.mode == "cookie":
+            ok, msg = try_save_login(
+                view.session_box.text, view.csrf_box.text
+            )
+        else:
+            ok, msg = try_login_password(
+                view.username_box.text, view.password_box.text
+            )
         view.message = msg
         view.saved = ok
         if ok:

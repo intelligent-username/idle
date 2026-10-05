@@ -196,9 +196,27 @@ def _login_direct(username: str) -> None:
     print("saved login")
 
 
+def _save_cookie_login(cookies: dict[str, str]) -> None:
+    """Validate cookies then save, offline-tolerant."""
+    from idle.lc.auth import save_auth
+    from idle.lc.auth import validate_session_cookies
+
+    try:
+        ok, reason = validate_session_cookies(cookies)
+    except (OSError, RuntimeError, ValueError):
+        ok, reason = False, "could not login (offline?). Check network and retry."
+    save_auth(cookies)
+    if ok:
+        print("saved login")
+        return
+    if "offline" in reason.lower():
+        print("saved login (unverified, offline?)")
+        return
+    print(reason)
+
+
 def cmd_login() -> None:
     """Prompt for cookies or username password and save."""
-    from idle.lc.auth import save_auth
 
     try:
         session: str = input("LEETCODE_SESSION: ").strip()
@@ -214,8 +232,7 @@ def cmd_login() -> None:
         cookies: dict[str, str] = {"LEETCODE_SESSION": session}
         if csrf:
             cookies["csrftoken"] = csrf
-        save_auth(cookies)
-        print("saved login")
+        _save_cookie_login(cookies)
         return
     try:
         username: str = input("username: ").strip()

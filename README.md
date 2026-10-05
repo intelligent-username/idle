@@ -130,12 +130,31 @@ uv run idle lc --gui
 
 ## Login
 
+Recommended: paste session cookies.
+
 1. Log in to leetcode.com in a browser.
 2. Copy `LEETCODE_SESSION` and `csrftoken` cookies.
 3. Run `uv run idle lc login` and paste each value.
 4. Credentials save to `auth.json` with `0600` permissions on POSIX.
+5. Pasted cookies are checked once; `saved login` means verified.
 
-Cookies are never logged. On expiry run `uv run idle lc login` again.
+Fallback: leave `LEETCODE_SESSION` empty, then enter username and password.
+Username/password often hits a captcha, so cookie-paste stays recommended.
+
+GUI: the login form starts in password mode. Press `F2` (or `Ctrl+T`) to
+switch to cookie mode (`LEETCODE_SESSION` + `csrftoken`). `Tab` switches fields.
+
+Login errors are distinct:
+
+- `could not login (offline?). Check network and retry.` means no network.
+- `login failed: HTTP {code} from LeetCode (retry later).` means LeetCode returned an error status.
+- `LeetCode challenge detected (captcha/cloudflare). Retry later.` means a captcha/Cloudflare check.
+- `login failed: bad credentials or captcha` means wrong password or captcha block.
+- `login failed: could not find login token (page changed?)` means the login page changed.
+- `saved login (unverified, offline?)` means cookies saved without a live check.
+- `login cancelled: empty session` means nothing was pasted.
+
+Cookies are never logged. On expiry (`Session expired. Run: idle lc login`) run `uv run idle lc login` again.
 
 ## Graceful Failures
 

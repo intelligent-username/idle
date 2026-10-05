@@ -66,12 +66,25 @@ def _add_config_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser],
     p_config.add_argument("--edit", action="store_true")
 
 
+class IdleParser(argparse.ArgumentParser):
+    """Custom parser preserving GUI flag on subcommands."""
+
+    def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        raw_args: list[str] = list(args) if args is not None else []
+        res = super().parse_args(args, namespace)
+        if "--gui" in raw_args:
+            res.gui = True
+        elif not hasattr(res, "gui"):
+            res.gui = False
+        return res
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build exact CLI tree for idle."""
     gui_parent = argparse.ArgumentParser(add_help=False)
     gui_parent.add_argument("--gui", action="store_true", help="run in GUI mode and open screen directly")
 
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+    parser = IdleParser(
         prog="idle",
         description="Terminal typing + LeetCode toolkit",
         parents=[gui_parent],
@@ -434,8 +447,12 @@ def _cmd_lc(args: argparse.Namespace) -> None:
         _dispatch_lc(name, args)
     except KeyboardInterrupt:
         print("\nexited cleanly")
-    except (OSError, RuntimeError):
-        print("could not complete lc command (offline?). Check network and retry.")
+    except (OSError, RuntimeError) as exc:
+        msg = str(exc).strip()
+        if msg.startswith(("login failed:", "LeetCode challenge", "Session expired", "saved login", "login cancelled:")) or "HTTP" in msg:
+            print(msg)
+        else:
+            print("could not complete lc command (offline?). Check network and retry.")
 
 
 def _menu_header() -> None:

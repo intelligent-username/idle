@@ -2,15 +2,11 @@
 
 import sqlite3
 import time
-from datetime import datetime
-from datetime import timedelta
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
-
+SCHEMA_VERSION: int = 1
 HEADER_TTL_S: float = 5.0
-
 _HEADER_CACHE: dict[str, tuple[float, str]] = {}
 
 
@@ -48,10 +44,15 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+class Connection(sqlite3.Connection):
+    """Custom SQLite connection supporting dynamic patching and hooks."""
+    pass
+
+
 def get_db(path: Path) -> sqlite3.Connection:
     """Open DB at path, ensuring dirs and running migrations."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn: sqlite3.Connection = sqlite3.connect(str(path))
+    conn: sqlite3.Connection = sqlite3.connect(str(path), factory=Connection)
     conn.execute("PRAGMA foreign_keys = ON;")
     migrate(conn)
     return conn
@@ -60,41 +61,6 @@ def get_db(path: Path) -> sqlite3.Connection:
 def _now_iso() -> str:
     """Return current UTC time as ISO8601 string."""
     return datetime.now(timezone.utc).isoformat()
-
-
-def _key_rows(
-    session_id: int, per_key: dict[str, dict[str, float]]
-) -> list[tuple[int, str, int, int, float]]:
-    """Build key_stats rows for batched insert."""
-    rows: list[tuple[int, str, int, int, float]] = []
-    for char, vals in per_key.items():
-        rows.append(
-            (
-                session_id,
-                str(char),
-                int(vals.get("attempts", 0)),
-                int(vals.get("misses", 0)),
-                float(vals.get("total_latency_ms", 0.0)),
-            )
-        )
-    return rows
-
-
-def _bigram_rows(
-    session_id: int, per_bigram: dict[str, dict[str, float]]
-) -> list[tuple[int, str, int, float]]:
-    """Build bigram_stats rows for batched insert."""
-    rows: list[tuple[int, str, int, float]] = []
-    for bigram, vals in per_bigram.items():
-        rows.append(
-            (
-                session_id,
-                str(bigram),
-                int(vals.get("count", 0)),
-                float(vals.get("total_latency_ms", 0.0)),
-            )
-        )
-    return rows
 
 
 def save_typing_session(
@@ -110,42 +76,34 @@ def save_typing_session(
     per_key: dict[str, dict[str, float]],
     per_bigram: dict[str, dict[str, float]],
 ) -> int:
-    """Persist one typing session with stats in single transaction.
-
-    Test: save_typing_session(conn, mode="time", ...)
-    returns int id with 1 session row stored.
-    """
+    """Persist one typing session with stats in single transaction."""
     ts: str = _now_iso()
     with conn:
-        cur: sqlite3.Cursor = conn.execute(
+        cur = conn.execute(
             "INSERT INTO typing_sessions"
-            "(ts, mode, duration_s, net_wpm, raw_wpm,"
-            " accuracy, consistency, text_len)"
+            "(ts, mode, duration_s, net_wpm, raw_wpm, accuracy, consistency, text_len)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-            (ts, mode, duration_s, net_wpm, raw_wpm,
-             accuracy, consistency, text_len),
+            (ts, mode, duration_s, net_wpm, raw_wpm, accuracy, consistency, text_len),
         )
         if cur.lastrowid is None:
             raise RuntimeError("typing session insert failed")
         session_id: int = int(cur.lastrowid)
-        key_rows: list[tuple[int, str, int, int, float]] = _key_rows(
-            session_id, per_key
-        )
+        key_rows = [
+            (session_id, str(ch), int(v.get("attempts", 0)), int(v.get("misses", 0)), float(v.get("total_latency_ms", 0.0)))
+            for ch, v in per_key.items()
+        ]
         if key_rows:
             conn.executemany(
-                "INSERT INTO key_stats"
-                "(session_id, char, attempts, misses,"
-                " total_latency_ms) VALUES (?, ?, ?, ?, ?);",
+                "INSERT INTO key_stats(session_id, char, attempts, misses, total_latency_ms) VALUES (?, ?, ?, ?, ?);",
                 key_rows,
             )
-        bigram_rows: list[tuple[int, str, int, float]] = _bigram_rows(
-            session_id, per_bigram
-        )
+        bigram_rows = [
+            (session_id, str(bg), int(v.get("count", 0)), float(v.get("total_latency_ms", 0.0)))
+            for bg, v in per_bigram.items()
+        ]
         if bigram_rows:
             conn.executemany(
-                "INSERT INTO bigram_stats"
-                "(session_id, bigram, count,"
-                " total_latency_ms) VALUES (?, ?, ?, ?);",
+                "INSERT INTO bigram_stats(session_id, bigram, count, total_latency_ms) VALUES (?, ?, ?, ?);",
                 bigram_rows,
             )
     return session_id
@@ -157,16 +115,13 @@ def delete_typing_session(conn: sqlite3.Connection, session_id: int) -> None:
         conn.execute("DELETE FROM key_stats WHERE session_id = ?;", (session_id,))
         conn.execute("DELETE FROM bigram_stats WHERE session_id = ?;", (session_id,))
         conn.execute("DELETE FROM typing_sessions WHERE id = ?;", (session_id,))
+    conn.commit()
 
 
 def get_best(conn: sqlite3.Connection) -> float | None:
     """Return max net WPM or None when no sessions, excluding drills."""
-    row = conn.execute(
-        "SELECT MAX(net_wpm) FROM typing_sessions WHERE mode != 'drill';"
-    ).fetchone()
-    if not row or row[0] is None:
-        return None
-    return float(row[0])
+    row = conn.execute("SELECT MAX(net_wpm) FROM typing_sessions WHERE mode != 'drill';").fetchone()
+    return float(row[0]) if (row and row[0] is not None) else None
 
 
 def get_7day_avg(conn: sqlite3.Connection) -> float | None:
@@ -176,17 +131,13 @@ def get_7day_avg(conn: sqlite3.Connection) -> float | None:
         "SELECT AVG(net_wpm) FROM typing_sessions WHERE ts >= ? AND mode != 'drill';",
         (cutoff,),
     ).fetchone()
-    if not row or row[0] is None:
-        return None
-    return float(row[0])
+    return float(row[0]) if (row and row[0] is not None) else None
 
 
 def get_header_stats(conn: sqlite3.Connection) -> tuple[float | None, int]:
     """Return Best WPM and solved count from one connection."""
     best: float | None = get_best(conn)
-    row = conn.execute(
-        "SELECT COUNT(*) FROM lc_progress WHERE status='solved';"
-    ).fetchone()
+    row = conn.execute("SELECT COUNT(*) FROM lc_progress WHERE status='solved';").fetchone()
     solved: int = int(row[0]) if row and row[0] is not None else 0
     return (best, solved)
 
@@ -203,18 +154,15 @@ def get_cached_header(db_path: str | Path) -> str:
     if not key:
         return _header_text(None, 0)
     now: float = time.monotonic()
-    hit: tuple[float, str] | None = _HEADER_CACHE.get(key)
-    if hit is not None:
-        ts, text = hit
-        if now - ts < HEADER_TTL_S:
-            return text
+    hit = _HEADER_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < HEADER_TTL_S:
+        return hit[1]
     try:
         conn = get_db(Path(key))
     except OSError:
         return _header_text(None, 0)
     try:
-        best, solved = get_header_stats(conn)
-        text = _header_text(best, solved)
+        text = _header_text(*get_header_stats(conn))
     finally:
         conn.close()
     _HEADER_CACHE[key] = (now, text)
