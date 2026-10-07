@@ -20,32 +20,38 @@ def _add_type_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], p
     p_type.add_argument("--stop-on-error", dest="stop_on_error", action="store_true")
 
 
-def _add_lc_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+def _add_cw_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
     parents = [parent] if parent else []
-    p_lc = sub.add_parser("lc", aliases=["leetcode"], parents=parents, help="leetcode practice")
-    lc_sub = p_lc.add_subparsers(dest="lc_command")
-    lc_sub.add_parser("login", help="login with browser cookies")
-    p_list = lc_sub.add_parser("list", help="list problems")
-    p_list.add_argument("--difficulty", type=str, choices=["e", "m", "h"], default=None)
+    p_cw = sub.add_parser("cw", aliases=["codewars", "lc", "leetcode"], parents=parents, help="codewars practice")
+    cw_sub = p_cw.add_subparsers(dest="cw_command")
+    cw_sub.add_parser("login", help="configure codewars API token / user")
+    p_list = cw_sub.add_parser("list", help="list katas")
+    p_list.add_argument("--rank", type=str, default=None, help="filter by rank (e.g. 8 kyu, 6 kyu)")
+    p_list.add_argument("--difficulty", type=str, default=None, help="alias for --rank")
     p_list.add_argument("--tag", action="append", default=[])
     p_list.add_argument("--status", type=str, choices=["todo", "solved"], default=None)
     p_list.add_argument("-n", dest="limit", type=int, default=20)
     p_list.add_argument("--refresh", action="store_true")
-    p_show = lc_sub.add_parser("show", help="show problem")
+    p_show = cw_sub.add_parser("show", help="show kata description")
     p_show.add_argument("id_or_slug", type=str)
-    p_pick = lc_sub.add_parser("pick", help="pick random unsolved")
-    p_pick.add_argument("--difficulty", type=str, choices=["e", "m", "h"], default=None)
+    p_pick = cw_sub.add_parser("pick", help="pick random unsolved kata")
+    p_pick.add_argument("--rank", type=str, default=None)
+    p_pick.add_argument("--difficulty", type=str, default=None)
     p_pick.add_argument("--tag", action="append", default=[])
-    lc_sub.add_parser("daily", help="daily challenge")
-    p_start = lc_sub.add_parser("start", help="scaffold solution")
+    cw_sub.add_parser("daily", help="daily kata")
+    p_start = cw_sub.add_parser("start", help="scaffold solution")
     p_start.add_argument("id_or_slug", type=str)
-    p_test = lc_sub.add_parser("test", help="test solution remotely")
+    p_test = cw_sub.add_parser("test", help="test solution locally")
     p_test.add_argument("id_or_slug", type=str, nargs="?")
-    p_submit = lc_sub.add_parser("submit", help="submit solution")
+    p_submit = cw_sub.add_parser("submit", help="submit solution or open submit page")
     p_submit.add_argument("id_or_slug", type=str, nargs="?")
-    lc_sub.add_parser("stats", help="leetcode stats")
-    p_open = lc_sub.add_parser("open", help="open in browser")
+    cw_sub.add_parser("stats", help="codewars user stats")
+    p_open = cw_sub.add_parser("open", help="open in browser")
     p_open.add_argument("id_or_slug", type=str)
+
+
+def _add_lc_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
+    _add_cw_parser(sub, parent)
 
 
 def _add_stats_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser], parent: argparse.ArgumentParser | None = None) -> None:
@@ -76,6 +82,8 @@ class IdleParser(argparse.ArgumentParser):
             res.gui = True
         elif not hasattr(res, "gui"):
             res.gui = False
+        if hasattr(res, "cw_command") and not hasattr(res, "lc_command"):
+            res.lc_command = res.cw_command
         return res
 
 
@@ -409,37 +417,60 @@ def _cmd_drill() -> None:
     _print_drill_delta(before, after)
 
 
-def _dispatch_lc(name: str, args: argparse.Namespace) -> None:
-    """Route one lc subcommand to its handler."""
-    from idle.lc import commands as lc
+def _dispatch_cw(name: str, args: argparse.Namespace) -> None:
+    """Route one cw/lc subcommand to its handler."""
+    from idle.cw import commands as cw
 
     if name == "login":
-        lc.cmd_login()
+        cw.cmd_login()
     elif name == "list":
-        lc.cmd_list(difficulty=getattr(args, "difficulty", None), tag=getattr(args, "tag", None), status=getattr(args, "status", None), limit=int(getattr(args, "limit", 20)), refresh=bool(getattr(args, "refresh", False)))
+        rank = getattr(args, "rank", None) or getattr(args, "difficulty", None)
+        cw.cmd_list(rank=rank, tag=getattr(args, "tag", None), status=getattr(args, "status", None), limit=int(getattr(args, "limit", 20)), refresh=bool(getattr(args, "refresh", False)))
     elif name == "show":
-        lc.cmd_show(str(getattr(args, "id_or_slug", "")))
+        cw.cmd_show(str(getattr(args, "id_or_slug", "")))
     elif name == "pick":
-        lc.cmd_pick(difficulty=getattr(args, "difficulty", None), tag=getattr(args, "tag", None))
+        rank = getattr(args, "rank", None) or getattr(args, "difficulty", None)
+        cw.cmd_pick(rank=rank, tag=getattr(args, "tag", None))
     elif name == "daily":
-        lc.cmd_daily()
+        cw.cmd_daily()
     elif name == "start":
-        lc.cmd_start(str(getattr(args, "id_or_slug", "")))
+        cw.cmd_start(str(getattr(args, "id_or_slug", "")))
     elif name == "test":
-        lc.cmd_test(getattr(args, "id_or_slug", None))
+        cw.cmd_test(getattr(args, "id_or_slug", None))
     elif name == "submit":
-        lc.cmd_submit(getattr(args, "id_or_slug", None))
+        cw.cmd_submit(getattr(args, "id_or_slug", None))
     elif name == "stats":
-        lc.cmd_lc_stats()
+        cw.cmd_cw_stats()
     elif name == "open":
-        lc.cmd_open(str(getattr(args, "id_or_slug", "")))
+        cw.cmd_open(str(getattr(args, "id_or_slug", "")))
     else:
-        print("usage: idle lc {login,list,show,pick,daily,start,test,submit,stats,open}")
+        print("usage: idle cw {login,list,show,pick,daily,start,test,submit,stats,open}")
+
+
+def _cmd_cw(args: argparse.Namespace) -> None:
+    """Dispatch cw/lc subcommands to cw.commands."""
+    name: str | None = getattr(args, "cw_command", None) or getattr(args, "lc_command", None)
+    if name is None:
+        print("usage: idle cw {login,list,show,pick,daily,start,test,submit,stats,open}")
+        return
+    try:
+        _dispatch_cw(name, args)
+    except KeyboardInterrupt:
+        print("\nexited cleanly")
+    except (OSError, RuntimeError) as exc:
+        msg = str(exc).strip()
+        if msg:
+            print(msg)
+        else:
+            print("could not complete command (offline?). Check network and retry.")
+
+
+def _dispatch_lc(name: str, args: argparse.Namespace) -> None:
+    _dispatch_cw(name, args)
 
 
 def _cmd_lc(args: argparse.Namespace) -> None:
-    """Dispatch lc subcommands to lc.commands."""
-    name: str | None = getattr(args, "lc_command", None)
+    name: str | None = getattr(args, "lc_command", None) or getattr(args, "cw_command", None)
     if name is None:
         print("usage: idle lc {login,list,show,pick,daily,start,test,submit,stats,open}")
         return
@@ -449,7 +480,15 @@ def _cmd_lc(args: argparse.Namespace) -> None:
         print("\nexited cleanly")
     except (OSError, RuntimeError) as exc:
         msg = str(exc).strip()
-        if msg.startswith(("login failed:", "LeetCode challenge", "Session expired", "saved login", "login cancelled:")) or "HTTP" in msg:
+        known_msgs = [
+            "login failed: HTTP 403 from LeetCode (retry later).",
+            "LeetCode challenge detected (captcha/cloudflare). Retry later.",
+            "login failed: bad credentials or captcha",
+            "Session expired. Run: idle lc login",
+            "saved login (unverified, offline?)",
+            "login cancelled: empty session",
+        ]
+        if any(km in msg for km in known_msgs):
             print(msg)
         else:
             print("could not complete lc command (offline?). Check network and retry.")
@@ -513,27 +552,29 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if bool(getattr(args, "gui", False)) and args.command not in (None, "gui"):
             try:
-                from idle.gui.app import run_gui
-                return run_gui(argv, initial_screen=args.command)
+                import pygame
             except ImportError:
                 print("pygame missing. Run: uv sync")
                 return 2
+            from idle.gui.app import run_gui
+            return run_gui(argv, initial_screen=args.command)
         if bool(getattr(args, "cli", False)) and args.command in (None, "gui"):
             run_menu()
             return 0
         if args.command is None or args.command == "gui":
             try:
-                from idle.gui.app import run_gui
-                return run_gui(argv)
+                import pygame
             except ImportError:
                 print("pygame missing. Run: uv sync")
                 return 2
+            from idle.gui.app import run_gui
+            return run_gui(argv)
         elif args.command in ("type", "typing"):
             _cmd_type(args)
         elif args.command == "drill":
             _cmd_drill()
-        elif args.command in ("lc", "leetcode"):
-            _cmd_lc(args)
+        elif args.command in ("cw", "codewars", "lc", "leetcode"):
+            _cmd_cw(args)
         elif args.command == "stats":
             cmd_stats(getattr(args, "limit", 20))
         elif args.command == "config":

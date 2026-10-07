@@ -25,6 +25,10 @@ class _Runtime:
     lc_list: Any = None
     lc_detail: Any = None
     lc_solve: Any = None
+    cw_list: Any = None
+    cw_detail: Any = None
+    cw_solve: Any = None
+    cw_all_katas: Any = None
     login: Any = None
     show_login: bool = False
     stats_data: Any = None
@@ -59,17 +63,18 @@ def _menu_header(db_path: str) -> str:
 
 
 def _new_runtime() -> _Runtime:
-    """Build runtime with paths, header, and empty LC views."""
-    from idle.gui import screens_lc
+    """Build runtime with paths, header, and CW views."""
+    from idle.gui import screens_cw
 
     db_path, cfg = _shell_paths()
     state = AppState(db_path=db_path, config=cfg)
     return _Runtime(
         state=state,
         menu_header=_menu_header(db_path),
-        lc_list=screens_lc.LcListState(),
-        lc_detail=screens_lc.LcDetailState(),
-        login=screens_lc.make_login_state(),
+        cw_list=screens_cw.CwListState(),
+        cw_detail=screens_cw.CwDetailState(),
+        cw_solve=screens_cw.CwSolveState(),
+        cw_all_katas=[],
     )
 
 
@@ -229,31 +234,8 @@ def _enter_drill(rt: _Runtime) -> None:
 
 
 def _enter_lc_list(rt: _Runtime) -> None:
-    """Require login first, auto-logging in if credentials available."""
-    from idle.gui import screens_lc
-
-    if rt.lc_list is None:
-        rt.lc_list = screens_lc.LcListState()
-    if screens_lc.auth_needed():
-        ok, msg = screens_lc.try_auto_login()
-        if not ok:
-            if msg and msg != "no credentials provided":
-                rt.login.message = msg
-            rt.show_login = True
-            return
-        rt.state.message = "saved login"
-    view: Any = rt.lc_list
-    if not view.problems and not view.message:
-        screens_lc.refresh_problem_list(view)
-    if view.needs_login:
-        ok, msg = screens_lc.try_auto_login()
-        if ok:
-            view.needs_login = False
-            screens_lc.refresh_problem_list(view)
-        else:
-            if msg and msg != "no credentials provided":
-                rt.login.message = msg
-            rt.show_login = True
+    """Redirect to Codewars list."""
+    _enter_cw_list(rt)
 
 
 def _enter_stats(rt: _Runtime) -> None:
@@ -279,6 +261,22 @@ def _enter_config(rt: _Runtime) -> None:
         rt.config_view = {"config": {}}
 
 
+def _enter_cw_list(rt: _Runtime) -> None:
+    """Load Codewars catalog and pick initial kata."""
+    from idle.cw.auth import load_saved_credentials
+    from idle.gui import screens_cw
+
+    if rt.cw_list is None:
+        rt.cw_list = screens_cw.CwListState()
+    _, username = load_saved_credentials()
+    katas, msg, _ = screens_cw.load_kata_list(username=username)
+    rt.cw_all_katas = katas
+    if msg:
+        rt.cw_list.message = msg
+    if rt.cw_list.current is None and katas:
+        rt.cw_list.current = screens_cw.pick_random_kata(katas, rt.cw_list.filters, rt.cw_list.new_only)
+
+
 def _goto(rt: _Runtime, screen: Screen) -> None:
     """Push screen and run its enter hook."""
     rt.state.push(screen)
@@ -286,8 +284,8 @@ def _goto(rt: _Runtime, screen: Screen) -> None:
         _enter_typing(rt)
     elif screen == Screen.DRILL:
         _enter_drill(rt)
-    elif screen == Screen.LC_LIST:
-        _enter_lc_list(rt)
+    elif screen in (Screen.CW_LIST, Screen.LC_LIST):
+        _enter_cw_list(rt)
     elif screen == Screen.STATS:
         _enter_stats(rt)
     elif screen == Screen.CONFIG:
@@ -303,10 +301,8 @@ def _go_back(rt: _Runtime) -> None:
 
 
 def _discard_session(session: Any, db_path: str) -> None:
-    """Discard unfinished/aborted session, deleting from DB if saved before completion."""
+    """Discard session, deleting from DB if session_id is set."""
     if session is None:
-        return
-    if getattr(session, "finished", False):
         return
     session_id: int | None = getattr(session, "session_id", None)
     if session_id is not None and db_path:
@@ -336,115 +332,7 @@ def _go_menu(rt: _Runtime) -> None:
 
 def _open_selected(rt: _Runtime) -> None:
     """Open current random problem in detail view."""
-    from idle.gui import screens_lc
 
-    view: Any = rt.lc_list
-    current: Any = getattr(view, "current", None)
-    if isinstance(current, dict) and current.get("slug"):
-        row: dict[str, Any] = current
-    else:
-        rows: list[dict[str, Any]] = screens_lc.apply_lc_filters(
-            view.problems,
-            view.filters.difficulty,
-            view.filters.tag,
-            view.filters.status,
-            view.filters.limit,
-        )
-        idx: int = int(view.items.selected)
-        if not 0 <= idx < len(rows):
-            view.message = "no problem selected."
-            return
-        row = rows[idx]
-    key: str = str(row.get("slug") or row.get("id") or "")
-    detail: Any
-    text: str
-    message: str
-    login: bool
-    detail, text, message, login = screens_lc.load_detail(key)
-    if login:
-        view.message = message
-        rt.show_login = True
-        return
-    if detail is None:
-        view.message = message or "could not fetch (offline?)."
-        return
-    slug: str = str(detail.get("slug", key))
-    rt.lc_detail = screens_lc.make_detail_state(detail, text, slug)
-    rt.state.push(Screen.LC_DETAIL)
-
-
-def _open_daily(rt: _Runtime) -> None:
-    """Open daily challenge in detail view."""
-    from idle.gui import screens_lc
-
-    view: Any = rt.lc_list
-    detail: Any
-    text: str
-    message: str
-    login: bool
-    detail, text, message, login = screens_lc.load_daily()
-    if login:
-        view.message = message
-        rt.show_login = True
-        return
-    if detail is None:
-        view.message = message or "could not fetch (offline?)."
-        return
-    slug: str = str(detail.get("slug", "daily"))
-    rt.lc_detail = screens_lc.make_detail_state(detail, text, slug)
-    rt.state.push(Screen.LC_DETAIL)
-
-
-def _do_test(rt: _Runtime) -> None:
-    """Run sample tests for solve view, friendly on error."""
-    from idle.gui import screens_lc
-
-    view: Any = rt.lc_solve
-    if view is None:
-        return
-    result: Any
-    panel: str
-    login: bool
-    result, panel, login = screens_lc.run_test_action(
-        view.detail, view.editor.text, view.data_input
-    )
-    if login:
-        view.message = panel
-        rt.show_login = True
-        return
-    if result is None:
-        view.message = panel
-        return
-    view.verdict = result
-    view.panel = panel
-    view.message = panel.splitlines()[0] if panel else ""
-
-
-def _do_submit(rt: _Runtime) -> None:
-    """Submit solve view, poll verdict, friendly on error."""
-    from idle.gui import screens_lc
-
-    view: Any = rt.lc_solve
-    if view is None:
-        return
-    verdict: Any
-    panel: str
-    login: bool
-    solved: bool
-    verdict, panel, login, solved = screens_lc.run_submit_action(
-        view.detail, view.editor.text
-    )
-    if login:
-        view.message = panel
-        rt.show_login = True
-        return
-    if verdict is None:
-        view.message = panel
-        return
-    view.verdict = verdict
-    view.panel = panel
-    view.solved = solved
-    view.message = panel.splitlines()[0] if panel else ""
 
 
 def _save_finished(session: Any, db_path: str) -> str:
@@ -489,12 +377,8 @@ def _draw_notice(surface: Any, font: Any, rt: _Runtime) -> None:
 
 
 def _draw_current(surface: Any, font: Any, rt: _Runtime) -> None:
-    """Dispatch draw to active screen, login overlay first."""
-    from idle.gui import screens_lc, screens_menu, screens_stats, screens_typing
-
-    if rt.show_login:
-        screens_lc.draw_lc_login(surface, font, rt.login)
-        return
+    """Dispatch draw to active screen."""
+    from idle.gui import screens_menu, screens_stats, screens_typing
     screen: Screen = rt.state.screen
     if screen == Screen.MENU:
         screens_menu.draw_menu(surface, rt.state, rt.menu_selected, rt.menu_header)
@@ -512,12 +396,15 @@ def _draw_current(surface: Any, font: Any, rt: _Runtime) -> None:
             _draw_notice(surface, font, rt)
         else:
             screens_typing.draw_drill(surface, rt.state, rt.drill)
-    elif screen == Screen.LC_LIST:
-        screens_lc.draw_lc_list(surface, font, rt.lc_list)
-    elif screen == Screen.LC_DETAIL:
-        screens_lc.draw_lc_detail(surface, font, rt.lc_detail)
-    elif screen == Screen.LC_SOLVE:
-        screens_lc.draw_lc_solve(surface, font, rt.lc_solve)
+    elif screen in (Screen.CW_LIST, Screen.LC_LIST):
+        from idle.gui import screens_cw
+        screens_cw.draw_cw_list(surface, font, rt.cw_list)
+    elif screen in (Screen.CW_DETAIL, Screen.LC_DETAIL):
+        from idle.gui import screens_cw
+        screens_cw.draw_cw_detail(surface, font, rt.cw_detail)
+    elif screen in (Screen.CW_SOLVE, Screen.LC_SOLVE):
+        from idle.gui import screens_cw
+        screens_cw.draw_cw_solve(surface, font, rt.cw_solve)
     elif screen == Screen.STATS:
         screens_stats.draw_stats(surface, rt.state, rt.stats_data)
     elif screen == Screen.CONFIG:
@@ -572,53 +459,66 @@ def _handle_session(event: Any, rt: _Runtime) -> bool:
     return False
 
 
-def _handle_list(event: Any, rt: _Runtime) -> None:
-    """Handle LC random nav, filters, refresh, open, daily."""
-    from idle.gui import screens_lc
 
-    action: Any = screens_lc.handle_lc_list(event, rt.lc_list)
-    if action == "back":
+
+
+def _handle_cw_list(event: Any, rt: _Runtime) -> None:
+    """Handle Codewars list events."""
+    from idle.cw import api as cw_api
+    from idle.cw.render import format_kata_detail
+    from idle.gui import screens_cw
+
+    action = screens_cw.handle_cw_list(event, rt.cw_list, rt.cw_all_katas)
+    if action == "menu":
         _go_back(rt)
-    elif action == "random":
-        screens_lc.repick_random(rt.lc_list)
-    elif action == "refresh":
-        screens_lc.refresh_problem_list(rt.lc_list, refresh=True)
-        if rt.lc_list.needs_login:
-            rt.show_login = True
-    elif action == "open":
-        _open_selected(rt)
-    elif action == "daily":
-        _open_daily(rt)
+    elif action == "detail":
+        if rt.cw_list.current:
+            slug = rt.cw_list.current.get("slug", "")
+            try:
+                kata = cw_api.fetch_kata(slug)
+            except Exception:
+                kata = rt.cw_list.current
+            text = format_kata_detail(kata)
+            rt.cw_detail = screens_cw.make_cw_detail_state(kata, text, slug)
+            _goto(rt, Screen.CW_DETAIL)
 
 
-def _handle_detail(event: Any, rt: _Runtime) -> None:
-    """Handle detail scroll, solve, open, back."""
-    from idle.gui import screens_lc
+def _handle_cw_detail(event: Any, rt: _Runtime) -> None:
+    """Handle Codewars detail events."""
+    from idle.cw.scaffold import scaffold_kata
+    from idle.gui import screens_cw
+    from idle.gui.widgets import Textbox
 
-    action: Any = screens_lc.handle_lc_detail(event, rt.lc_detail)
+    action = screens_cw.handle_cw_detail(event, rt.cw_detail)
     if action == "back":
         _go_back(rt)
     elif action == "solve":
-        detail: Any = rt.lc_detail.detail or {}
-        rt.lc_solve = screens_lc.make_solve_state(detail)
-        rt.state.push(Screen.LC_SOLVE)
-    elif action == "open":
-        rt.lc_detail.message = screens_lc.open_problem(rt.lc_detail.slug)
+        kata = rt.cw_detail.detail or {"slug": rt.cw_detail.slug, "name": rt.cw_detail.slug}
+        path = scaffold_kata(kata)
+        code = path.read_text(encoding="utf-8") if path.exists() else ""
+        rt.cw_solve = screens_cw.CwSolveState(slug=rt.cw_detail.slug, editor=Textbox(text=code, multiline=True))
+        _goto(rt, Screen.CW_SOLVE)
 
 
-def _handle_solve(event: Any, rt: _Runtime) -> None:
-    """Handle editor keys plus test, submit, open, back."""
-    from idle.gui import screens_lc
+def _handle_cw_solve(event: Any, rt: _Runtime) -> None:
+    """Handle Codewars solve editor events."""
+    from idle.gui import screens_cw
 
-    action: Any = screens_lc.handle_lc_solve(event, rt.lc_solve)
+    action = screens_cw.handle_cw_solve(event, rt.cw_solve)
     if action == "back":
         _go_back(rt)
-    elif action == "test":
-        _do_test(rt)
-    elif action == "submit":
-        _do_submit(rt)
-    elif action == "open":
-        rt.lc_solve.message = screens_lc.open_problem(rt.lc_solve.slug)
+
+
+def _handle_cw(event: Any, rt: _Runtime) -> bool:
+    """Route event to Codewars list, detail, or solve."""
+    screen: Screen = rt.state.screen
+    if screen in (Screen.CW_LIST, Screen.LC_LIST):
+        _handle_cw_list(event, rt)
+    elif screen in (Screen.CW_DETAIL, Screen.LC_DETAIL):
+        _handle_cw_detail(event, rt)
+    elif screen in (Screen.CW_SOLVE, Screen.LC_SOLVE):
+        _handle_cw_solve(event, rt)
+    return False
 
 
 def _handle_lc(event: Any, rt: _Runtime) -> bool:
@@ -646,33 +546,7 @@ def _handle_info(event: Any, rt: _Runtime) -> bool:
     return False
 
 
-def _handle_login(event: Any, rt: _Runtime) -> bool:
-    """Handle username login, lazy-load random on success."""
-    from idle.gui import screens_lc
-    from idle.gui.widgets import Textbox
-    from idle.lc.auth import load_saved_credentials
 
-    if not rt.login.username_box.text and not rt.login.password_box.text:
-        user, pw = load_saved_credentials()
-        if user:
-            rt.login.username_box = Textbox(text=user)
-        if pw:
-            rt.login.password_box = Textbox(text=pw)
-
-    action: Any = screens_lc.handle_lc_login(event, rt.login)
-    if action == "back":
-        rt.show_login = False
-    elif action == "login_ok":
-        rt.show_login = False
-        rt.state.message = "saved login"
-        try:
-            if rt.lc_list is not None and not rt.lc_list.problems:
-                screens_lc.refresh_problem_list(rt.lc_list)
-                if rt.lc_list.needs_login:
-                    rt.show_login = True
-        except (OSError, RuntimeError):
-            pass
-    return False
 
 
 def _handle_current(event: Any, rt: _Runtime) -> bool:
@@ -681,8 +555,8 @@ def _handle_current(event: Any, rt: _Runtime) -> bool:
 
     if rt.show_login:
         return _handle_login(event, rt)
-    if rt.state.screen == Screen.LC_SOLVE:
-        return _handle_lc(event, rt)
+    if rt.state.screen in (Screen.LC_SOLVE, Screen.CW_SOLVE):
+        return _handle_cw(event, rt)
     if int(getattr(event, "type", -1)) == pygame.KEYDOWN:
         key: int = int(getattr(event, "key", 0))
         mod: int = int(getattr(event, "mod", 0))
@@ -696,8 +570,8 @@ def _handle_current(event: Any, rt: _Runtime) -> bool:
         return _handle_menu(event, rt)
     if screen in (Screen.TYPE, Screen.DRILL):
         return _handle_session(event, rt)
-    if screen in (Screen.LC_LIST, Screen.LC_DETAIL):
-        return _handle_lc(event, rt)
+    if screen in (Screen.LC_LIST, Screen.LC_DETAIL, Screen.CW_LIST, Screen.CW_DETAIL):
+        return _handle_cw(event, rt)
     return _handle_info(event, rt)
 
 
@@ -727,8 +601,10 @@ def run_gui(
             "type": Screen.TYPE,
             "typing": Screen.TYPE,
             "drill": Screen.DRILL,
-            "lc": Screen.LC_LIST,
-            "leetcode": Screen.LC_LIST,
+            "lc": Screen.CW_LIST,
+            "leetcode": Screen.CW_LIST,
+            "cw": Screen.CW_LIST,
+            "codewars": Screen.CW_LIST,
             "stats": Screen.STATS,
             "config": Screen.CONFIG,
             "menu": Screen.MENU,

@@ -77,10 +77,32 @@ def get_recent_attempts(conn: Any, limit: int = 10) -> list[Any]:
     return list(cur.fetchall())
 
 
+def _calc_streak(days: list[str]) -> int:
+    """Count consecutive-day streak ending at latest date."""
+    from datetime import date
+
+    uniq: list[str] = sorted(set(days))
+    if not uniq:
+        return 0
+    parsed: list[date] = []
+    for day in uniq:
+        try:
+            parsed.append(date.fromisoformat(day))
+        except ValueError:
+            continue
+    if not parsed:
+        return 0
+    streak: int = 1
+    for i in range(len(parsed) - 1, 0, -1):
+        if (parsed[i] - parsed[i - 1]).days == 1:
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def get_streak(conn: Any) -> tuple[int, int]:
     """Return solve streak and active day count."""
-    from idle.lc.commands import _calc_streak
-
     rows: Any = conn.execute(
         "SELECT substr(solved_at,1,10) FROM lc_progress"
         " WHERE solved_at IS NOT NULL;"

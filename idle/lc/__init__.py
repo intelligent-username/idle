@@ -1,1 +1,1 @@
-"""LeetCode toolkit package."""
+"""LeetCode module compatibility package."""

@@ -14,6 +14,10 @@ class Screen(Enum):
     LC_LIST = "lc_list"
     LC_DETAIL = "lc_detail"
     LC_SOLVE = "lc_solve"
+    CW_LIST = "cw_list"
+    CW_DETAIL = "cw_detail"
+    CW_SOLVE = "cw_solve"
+    CW_LOGIN = "cw_login"
     STATS = "stats"
     CONFIG = "config"
 

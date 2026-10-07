@@ -37,7 +37,7 @@ DIFFICULTY_COLORS: list[tuple[int, int, int]] = [
 MENU_LABELS: list[str] = [
     "1) type",
     "2) drill",
-    "3) leetcode",
+    "3) codewars",
     "4) stats",
     "5) config",
     "6) quit",
