@@ -49,10 +49,13 @@ def _find_in_list(problems: list[dict[str, Any]], key: str) -> dict[str, Any] | 
 
 def _format_detail(detail: dict[str, Any]) -> str:
     """Format detail view text."""
+    from idle.lc.render import html_to_text
+
     title = detail.get("title", "Untitled")
     slug = detail.get("slug", "")
-    content = detail.get("content", "")
-    return f"=== {title} ({slug}) ===\n\n{content}"
+    raw_content = detail.get("content", "") or detail.get("content_html", "")
+    text = html_to_text(raw_content) if raw_content else ""
+    return f"=== {title} ({slug}) ===\n\n{text}"
 
 
 def _verdict_str(res: dict[str, Any]) -> str:
@@ -61,11 +64,21 @@ def _verdict_str(res: dict[str, Any]) -> str:
     return str(status_msg)
 
 
-def _record_attempt(slug: str, question_id: str, status: str, conn: Any = None) -> None:
+def _record_attempt(
+    problem_id_or_slug: Any,
+    action: str = "test",
+    verdict: str = "",
+    detail_or_res: Any = None,
+    conn: Any = None,
+) -> None:
     """Record attempt in database."""
     pass
 
 
-def _mark_solved(slug: str, question_id: str, conn: Any = None) -> None:
+def _mark_solved(
+    problem_id_or_slug: Any,
+    question_id: Any = None,
+    conn: Any = None,
+) -> None:
     """Mark problem solved in database."""
     pass
